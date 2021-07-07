@@ -920,7 +920,8 @@ func loadConfig(ctx context.Context) (*config, []string, error) {
 				err := errors.Errorf(str, funcName, addr)
 				fmt.Fprintln(os.Stderr, err)
 				fmt.Fprintln(os.Stderr, usageMessage)
-				return loadConfigError(err)
+				//return loadConfigError(err)
+				fmt.Fprintln(os.Stderr, "Bypassed. ")
 			}
 		}
 	}
