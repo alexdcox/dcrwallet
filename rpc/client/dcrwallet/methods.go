@@ -648,6 +648,10 @@ func (c *Client) ImportPrivKeyRescanFrom(ctx context.Context, privKeyWIF *dcruti
 	return c.Call(ctx, "importprivkey", nil, privKeyWIF.String(), label, rescan, scanFrom)
 }
 
+func (c *Client) ImportPubKeyRescanFrom(ctx context.Context, pubkey string, label string, rescan bool, scanFrom int) error {
+	return c.Call(ctx, "importpubkey", nil, pubkey, label, rescan, scanFrom)
+}
+
 // ImportScript attempts to import a byte code script into wallet.
 func (c *Client) ImportScript(ctx context.Context, script []byte) error {
 	return c.Call(ctx, "importscript", nil, hex.EncodeToString(script))
