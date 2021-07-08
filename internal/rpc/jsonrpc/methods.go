@@ -2860,7 +2860,57 @@ func makeOutputs(pairs map[string]dcrutil.Amount, chainParams *chaincfg.Params) 
 // sendPairs creates and sends payment transactions.
 // It returns the transaction hash in string format upon success
 // All errors are returned in dcrjson.RPCError format
-func (s *Server) sendPairs(ctx context.Context, w *wallet.Wallet, amounts map[string]dcrutil.Amount, account uint32, minconf int32) (string, error) {
+func (s *Server) sendPairsWithMemo(ctx context.Context, w *wallet.Wallet, amounts map[string]dcrutil.Amount, memo *string, account uint32, minconf int32) (string, error) {
+	changeAccount := account
+	if s.cfg.CSPPServer != "" && s.cfg.MixAccount != "" && s.cfg.MixChangeAccount != "" {
+		mixAccount, err := w.AccountNumber(ctx, s.cfg.MixAccount)
+		if err != nil {
+			return "", err
+		}
+		if account == mixAccount {
+			changeAccount, err = w.AccountNumber(ctx, s.cfg.MixChangeAccount)
+			if err != nil {
+				return "", err
+			}
+		}
+	}
+
+	outputs, err := makeOutputs(amounts, w.ChainParams())
+	if err != nil {
+		return "", err
+	}
+	if memo != nil {
+		memoscript, err := txscript.NewScriptBuilder().AddOp(txscript.OP_RETURN).AddData([]byte(*memo)).Script()
+		if err != nil {
+			fmt.Printf("cannot create memo script: %s\n", err)
+			return "", err
+		}
+		memoOutput := &wire.TxOut{
+			Value:    int64(0),
+			PkScript: memoscript,
+			Version:  0, //TODO: Version 0 OK?
+		}
+		outputs = append(outputs, memoOutput)
+	}
+
+	txSha, err := w.SendOutputs(ctx, outputs, account, changeAccount, minconf)
+	if err != nil {
+		if errors.Is(err, errors.Locked) {
+			return "", errWalletUnlockNeeded
+		}
+		if errors.Is(err, errors.InsufficientBalance) {
+			return "", rpcError(dcrjson.ErrRPCWalletInsufficientFunds, err)
+		}
+		return "", err
+	}
+
+	return txSha.String(), nil
+}
+
+// sendPairs creates and sends payment transactions.
+// It returns the transaction hash in string format upon success
+// All errors are returned in dcrjson.RPCError format
+func (s *Server) sendPairs(ctx context.Context, w *wallet.Wallet, amounts map[string]dcrutil.Amount,  account uint32, minconf int32) (string, error) {
 	changeAccount := account
 	if s.cfg.CSPPServer != "" && s.cfg.MixAccount != "" && s.cfg.MixChangeAccount != "" {
 		mixAccount, err := w.AccountNumber(ctx, s.cfg.MixAccount)
@@ -3697,8 +3747,11 @@ func (s *Server) sendToAddress(ctx context.Context, icmd interface{}) (interface
 
 	// Transaction comments are not yet supported.  Error instead of
 	// pretending to save them.
-	if !isNilOrEmpty(cmd.Comment) || !isNilOrEmpty(cmd.CommentTo) {
-		return nil, rpcErrorf(dcrjson.ErrRPCUnimplemented, "transaction comments are unsupported")
+	//if !isNilOrEmpty(cmd.Comment) || !isNilOrEmpty(cmd.CommentTo) {
+	//	return nil, rpcErrorf(dcrjson.ErrRPCUnimplemented, "transaction comments are unsupported")
+	//}
+	if cmd.Comment != nil {
+		fmt.Printf("sendToAddress: recv comment: %s. Will be put into a Output with OP_RETURN \n", *cmd.Comment)
 	}
 
 	amt, err := dcrutil.NewAmount(cmd.Amount)
@@ -3717,7 +3770,11 @@ func (s *Server) sendToAddress(ctx context.Context, icmd interface{}) (interface
 	}
 
 	// sendtoaddress always spends from the default account, this matches bitcoind
-	return s.sendPairs(ctx, w, pairs, udb.DefaultAccountNum, 1)
+	if cmd.Comment != nil {
+		return s.sendPairsWithMemo(ctx, w, pairs, cmd.Comment, udb.DefaultAccountNum, 1)
+	} else {
+		return s.sendPairs(ctx, w, pairs, udb.DefaultAccountNum, 1)
+	}
 }
 
 // sendToMultiSig handles a sendtomultisig RPC request by creating a new
