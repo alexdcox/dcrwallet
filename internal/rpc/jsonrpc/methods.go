@@ -3662,8 +3662,11 @@ func (s *Server) sendFrom(ctx context.Context, icmd interface{}) (interface{}, e
 
 	// Transaction comments are not yet supported.  Error instead of
 	// pretending to save them.
-	if !isNilOrEmpty(cmd.Comment) || !isNilOrEmpty(cmd.CommentTo) {
-		return nil, rpcErrorf(dcrjson.ErrRPCUnimplemented, "transaction comments are unsupported")
+	//if !isNilOrEmpty(cmd.Comment) || !isNilOrEmpty(cmd.CommentTo) {
+	//	return nil, rpcErrorf(dcrjson.ErrRPCUnimplemented, "transaction comments are unsupported")
+	//}
+	if cmd.Comment != nil {
+		fmt.Printf("sendFrom recv comment: %s\n", *cmd.Comment)
 	}
 
 	account, err := w.AccountNumber(ctx, cmd.FromAccount)
@@ -3688,7 +3691,11 @@ func (s *Server) sendFrom(ctx context.Context, icmd interface{}) (interface{}, e
 		cmd.ToAddress: amt,
 	}
 
-	return s.sendPairs(ctx, w, pairs, account, minConf)
+	if cmd.Comment == nil {
+		return s.sendPairs(ctx, w, pairs, account, minConf)
+	} else {
+		return s.sendPairsWithMemo(ctx, w, pairs, cmd.Comment, account, minConf)
+	}
 }
 
 // sendMany handles a sendmany RPC request by creating a new transaction
