@@ -21,15 +21,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 
 	"decred.org/dcrwallet/v2/rpc/jsonrpc/types"
 	"decred.org/dcrwallet/v2/wallet/txauthor"
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/chaincfg/v3"
+	dcrutil3 "github.com/decred/dcrd/dcrutil/v3"
 	"github.com/decred/dcrd/dcrutil/v4"
-	"github.com/decred/dcrd/txscript/v4"
+	txscript3 "github.com/decred/dcrd/txscript/v3"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -167,7 +167,7 @@ func main() {
 		return
 	}
 
-	addr, err := dcrutil.DecodeAddress(cfg.SendToAddress, params)
+	addr, err := dcrutil3.DecodeAddress(cfg.SendToAddress, params)
 	if err != nil {
 		fmt.Printf("failed to parse address %s: %v", cfg.SendToAddress, err)
 		return
@@ -180,7 +180,7 @@ func main() {
 	}
 
 	// Create the unsigned transaction.
-	pkScript, err := txscript.PayToAddrScript(addr)
+	pkScript, err := txscript3.PayToAddrScript(addr)
 	if err != nil {
 		fmt.Printf("failed to generate pkScript: %s", err)
 		return

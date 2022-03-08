@@ -26,7 +26,6 @@ import (
 	"decred.org/dcrwallet/v2/rpc/jsonrpc/types"
 	"decred.org/dcrwallet/v2/validate"
 	"decred.org/dcrwallet/v2/wallet/txrules"
-	"decred.org/dcrwallet/wallet/txsizes"
 	"decred.org/dcrwallet/v2/wallet/txsizes"
 	"decred.org/dcrwallet/v2/wallet/udb"
 	"decred.org/dcrwallet/v2/wallet/walletdb"
@@ -3829,11 +3828,11 @@ func (w *Wallet) ImportScript(ctx context.Context, rs []byte) error {
 func (w *Wallet) ImportPublicKey(ctx context.Context, pubkey []byte) (string, error) {
 	const op errors.Op = "wallet.ImportPublicKey"
 	// Attempt to import private key into wallet.
-	var addr dcrutil.Address
+	var addr stdaddr.Address
 	var props *udb.AccountProperties
 	err := walletdb.Update(ctx, w.db, func(tx walletdb.ReadWriteTx) error {
 		addrmgrNs := tx.ReadWriteBucket(waddrmgrNamespaceKey)
-		//maddr, err := w.manager.ImportPrivateKey(addrmgrNs, wif)
+		// maddr, err := w.manager.ImportPrivateKey(addrmgrNs, wif)
 		maddr, err := w.manager.ImportPublicKey(addrmgrNs, pubkey)
 		if err == nil {
 			addr = maddr.Address()
@@ -3847,7 +3846,7 @@ func (w *Wallet) ImportPublicKey(ctx context.Context, pubkey []byte) (string, er
 	}
 
 	if n, err := w.NetworkBackend(); err == nil {
-		err := n.LoadTxFilter(ctx, false, []dcrutil.Address{addr}, nil)
+		err := n.LoadTxFilter(ctx, false, []stdaddr.Address{addr}, nil)
 		if err != nil {
 			return "", errors.E(op, err)
 		}

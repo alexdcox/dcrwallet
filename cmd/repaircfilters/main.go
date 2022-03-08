@@ -20,7 +20,7 @@ import (
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/chaincfg/v3"
 	"github.com/decred/dcrd/crypto/blake256"
-	"github.com/decred/dcrd/dcrutil/v4"
+	dcrutil3 "github.com/decred/dcrd/dcrutil/v3"
 	"github.com/decred/dcrd/wire"
 	"github.com/jessevdk/go-flags"
 	"github.com/jrick/wsrpc/v2"
@@ -28,7 +28,7 @@ import (
 )
 
 var (
-	walletDataDirectory = dcrutil.AppDataDir("dcrwallet", false)
+	walletDataDirectory = dcrutil3.AppDataDir("dcrwallet", false)
 	newlineBytes        = []byte{'\n'}
 )
 

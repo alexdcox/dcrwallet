@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"decred.org/dcrwallet/v2/errors"
-	"decred.org/dcrwallet/internal/loader"
 	"decred.org/dcrwallet/v2/internal/loader"
 	"decred.org/dcrwallet/v2/internal/vsp"
 	"decred.org/dcrwallet/v2/p2p"
@@ -2652,7 +2651,7 @@ func (s *Server) getTransaction(ctx context.Context, icmd interface{}) (interfac
 		Time:            txd.Received.Unix(),
 		TimeReceived:    txd.Received.Unix(),
 		WalletConflicts: []string{}, // Not saved
-		//Generated:     compat.IsEitherCoinBaseTx(&details.MsgTx),
+		// Generated:     compat.IsEitherCoinBaseTx(&details.MsgTx),
 	}
 
 	if txd.Block.Height != -1 {
@@ -3608,7 +3607,7 @@ func (s *Server) sendPairsWithMemo(ctx context.Context, w *wallet.Wallet, amount
 		memoOutput := &wire.TxOut{
 			Value:    int64(0),
 			PkScript: memoscript,
-			Version:  0, //TODO: Version 0 OK?
+			Version:  0, // TODO: Version 0 OK?
 		}
 		outputs = append(outputs, memoOutput)
 	}
@@ -4488,9 +4487,9 @@ func (s *Server) sendFrom(ctx context.Context, icmd interface{}) (interface{}, e
 
 	// Transaction comments are not yet supported.  Error instead of
 	// pretending to save them.
-	//if !isNilOrEmpty(cmd.Comment) || !isNilOrEmpty(cmd.CommentTo) {
+	// if !isNilOrEmpty(cmd.Comment) || !isNilOrEmpty(cmd.CommentTo) {
 	//	return nil, rpcErrorf(dcrjson.ErrRPCUnimplemented, "transaction comments are unsupported")
-	//}
+	// }
 	if cmd.Comment != nil {
 		fmt.Printf("sendFrom recv comment: %s\n", *cmd.Comment)
 	}
@@ -4580,9 +4579,9 @@ func (s *Server) sendToAddress(ctx context.Context, icmd interface{}) (interface
 
 	// Transaction comments are not yet supported.  Error instead of
 	// pretending to save them.
-	//if !isNilOrEmpty(cmd.Comment) || !isNilOrEmpty(cmd.CommentTo) {
+	// if !isNilOrEmpty(cmd.Comment) || !isNilOrEmpty(cmd.CommentTo) {
 	//	return nil, rpcErrorf(dcrjson.ErrRPCUnimplemented, "transaction comments are unsupported")
-	//}
+	// }
 	if cmd.Comment != nil {
 		fmt.Printf("sendToAddress: recv comment: %s. Will be put into a Output with OP_RETURN \n", *cmd.Comment)
 	}
@@ -5686,40 +5685,6 @@ func (s *Server) setAccountPassphrase(ctx context.Context, icmd interface{}) (in
 	}
 	err = w.SetAccountPassphrase(ctx, account, []byte(cmd.Passphrase))
 	return nil, err
-}
-
-func (s *Server) accountUnlocked(ctx context.Context, icmd interface{}) (interface{}, error) {
-	cmd := icmd.(*types.AccountUnlockedCmd)
-	w, ok := s.walletLoader.LoadedWallet()
-	if !ok {
-		return nil, errUnloadedWallet
-	}
-
-	account, err := w.AccountNumber(ctx, cmd.Account)
-	if err != nil {
-		if errors.Is(err, errors.NotExist) {
-			return nil, errAccountNotFound
-		}
-		return nil, err
-	}
-
-	encrypted, err := w.AccountHasPassphrase(ctx, account)
-	if err != nil {
-		return nil, err
-	}
-	if !encrypted {
-		return &types.AccountUnlockedResult{}, nil
-	}
-
-	unlocked, err := w.AccountUnlocked(ctx, account)
-	if err != nil {
-		return nil, err
-	}
-
-	return &types.AccountUnlockedResult{
-		Encrypted: true,
-		Unlocked:  &unlocked,
-	}, nil
 }
 
 func (s *Server) accountUnlocked(ctx context.Context, icmd interface{}) (interface{}, error) {

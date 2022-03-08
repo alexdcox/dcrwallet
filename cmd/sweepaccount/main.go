@@ -11,7 +11,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -21,8 +20,9 @@ import (
 	"decred.org/dcrwallet/v2/wallet/txrules"
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/chaincfg/v3"
+	dcrutil3 "github.com/decred/dcrd/dcrutil/v3"
 	"github.com/decred/dcrd/dcrutil/v4"
-	"github.com/decred/dcrd/txscript/v4"
+	txscript3 "github.com/decred/dcrd/txscript/v3"
 	"github.com/decred/dcrd/wire"
 	"github.com/jessevdk/go-flags"
 	"github.com/jrick/wsrpc/v2"
@@ -33,7 +33,7 @@ const defaultScriptVersion = 0
 
 var (
 	activeNet           = chaincfg.MainNetParams()
-	walletDataDirectory = dcrutil.AppDataDir("dcrwallet", false)
+	walletDataDirectory = dcrutil3.AppDataDir("dcrwallet", false)
 	newlineBytes        = []byte{'\n'}
 )
 
@@ -256,12 +256,12 @@ func (src *destinationScriptSourceToAccount) Script() ([]byte, uint16, error) {
 		return nil, 0, err
 	}
 
-	destinationAddress, err := dcrutil.DecodeAddress(destinationAddressStr, activeNet)
+	destinationAddress, err := dcrutil3.DecodeAddress(destinationAddressStr, activeNet)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	script, err := txscript.PayToAddrScript(destinationAddress)
+	script, err := txscript3.PayToAddrScript(destinationAddress)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -281,11 +281,11 @@ type destinationScriptSourceToAddress struct {
 
 // Source creates a non-change address.
 func (src *destinationScriptSourceToAddress) Script() ([]byte, uint16, error) {
-	destinationAddress, err := dcrutil.DecodeAddress(src.address, activeNet)
+	destinationAddress, err := dcrutil3.DecodeAddress(src.address, activeNet)
 	if err != nil {
 		return nil, 0, err
 	}
-	script, err := txscript.PayToAddrScript(destinationAddress)
+	script, err := txscript3.PayToAddrScript(destinationAddress)
 	return script, defaultScriptVersion, err
 }
 
