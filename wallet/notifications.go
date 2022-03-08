@@ -1,5 +1,5 @@
 // Copyright (c) 2015-2016 The btcsuite developers
-// Copyright (c) 2016-2020 The Decred developers
+// Copyright (c) 2016-2021 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -10,15 +10,16 @@ import (
 	"context"
 	"sync"
 
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/internal/compat"
-	"decred.org/dcrwallet/wallet/udb"
-	"decred.org/dcrwallet/wallet/walletdb"
-	"github.com/decred/dcrd/blockchain/stake/v3"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/internal/compat"
+	"decred.org/dcrwallet/v2/wallet/udb"
+	"decred.org/dcrwallet/v2/wallet/walletdb"
+	"github.com/decred/dcrd/blockchain/stake/v4"
 	"github.com/decred/dcrd/chaincfg/chainhash"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/decred/dcrd/hdkeychain/v3"
-	"github.com/decred/dcrd/txscript/v3"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
+	"github.com/decred/dcrd/txscript/v4/stdscript"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -72,39 +73,41 @@ func lookupInputAccount(dbtx walletdb.ReadTx, w *Wallet, details *udb.TxDetails,
 		return 0
 	}
 	prevOut := prev.MsgTx.TxOut[prevOP.Index]
-	_, addrs, _, err := txscript.ExtractPkScriptAddrs(prevOut.Version, prevOut.PkScript, w.chainParams, true) // Yes treasury
-	var inputAcct uint32
-	if err == nil && len(addrs) > 0 {
-		inputAcct, err = w.manager.AddrAccount(addrmgrNs, addrs[0])
+	_, addrs := stdscript.ExtractAddrs(prevOut.Version, prevOut.PkScript, w.chainParams)
+	if len(addrs) == 0 {
+		return 0
 	}
+
+	inputAcct, err := w.manager.AddrAccount(addrmgrNs, addrs[0])
 	if err != nil {
 		log.Errorf("Cannot fetch account for previous output %v: %v", prevOP, err)
-		inputAcct = 0
+		return 0
 	}
 	return inputAcct
 }
 
 func lookupOutputChain(dbtx walletdb.ReadTx, w *Wallet, details *udb.TxDetails,
-	cred udb.CreditRecord) (account uint32, internal bool, address dcrutil.Address,
+	cred udb.CreditRecord) (account uint32, internal bool, address stdaddr.Address,
 	amount int64, outputScript []byte) {
 
 	addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
 
 	output := details.MsgTx.TxOut[cred.Index]
-	_, addrs, _, err := txscript.ExtractPkScriptAddrs(output.Version, output.PkScript, w.chainParams, true) // Yes treasury
-	var ma udb.ManagedAddress
-	if err == nil && len(addrs) > 0 {
-		ma, err = w.manager.Address(addrmgrNs, addrs[0])
+	_, addrs := stdscript.ExtractAddrs(output.Version, output.PkScript, w.chainParams)
+	if len(addrs) == 0 {
+		return
 	}
+
+	ma, err := w.manager.Address(addrmgrNs, addrs[0])
 	if err != nil {
 		log.Errorf("Cannot fetch account for wallet output: %v", err)
-	} else {
-		account = ma.Account()
-		internal = ma.Internal()
-		address = ma.Address()
-		amount = output.Value
-		outputScript = output.PkScript
+		return
 	}
+	account = ma.Account()
+	internal = ma.Internal()
+	address = ma.Address()
+	amount = output.Value
+	outputScript = output.PkScript
 	return
 }
 
@@ -185,12 +188,11 @@ func totalBalances(dbtx walletdb.ReadTx, w *Wallet, m map[uint32]dcrutil.Amount)
 	}
 	for i := range unspent {
 		output := unspent[i]
-		var outputAcct uint32
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(
-			0, output.PkScript, w.chainParams, true) // Yes treasury
-		if err == nil && len(addrs) > 0 {
-			outputAcct, err = w.manager.AddrAccount(addrmgrNs, addrs[0])
+		_, addrs := stdscript.ExtractAddrs(scriptVersionAssumed, output.PkScript, w.chainParams)
+		if len(addrs) == 0 {
+			continue
 		}
+		outputAcct, err := w.manager.AddrAccount(addrmgrNs, addrs[0])
 		if err == nil {
 			_, ok := m[outputAcct]
 			if ok {
@@ -432,7 +434,7 @@ func TxTransactionType(tx *wire.MsgTx) TransactionType {
 		return TransactionTypeTicketPurchase
 	} else if stake.IsSSGen(tx, true /* Yes treasury */) {
 		return TransactionTypeVote
-	} else if stake.IsSSRtx(tx) {
+	} else if isRevocation(tx) {
 		return TransactionTypeRevocation
 	} else {
 		return TransactionTypeRegular
@@ -457,7 +459,7 @@ type TransactionSummaryOutput struct {
 	Account      uint32
 	Internal     bool
 	Amount       dcrutil.Amount
-	Address      dcrutil.Address
+	Address      stdaddr.Address
 	OutputScript []byte
 }
 

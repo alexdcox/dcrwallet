@@ -9,21 +9,20 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/internal/loader"
-	"decred.org/dcrwallet/internal/prompt"
-	"decred.org/dcrwallet/wallet"
-	_ "decred.org/dcrwallet/wallet/drivers/bdb"
-	"decred.org/dcrwallet/walletseed"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/internal/loader"
+	"decred.org/dcrwallet/v2/internal/prompt"
+	"decred.org/dcrwallet/v2/wallet"
+	_ "decred.org/dcrwallet/v2/wallet/drivers/bdb"
+	"decred.org/dcrwallet/v2/walletseed"
 	"github.com/decred/dcrd/chaincfg/v3"
-	"github.com/decred/dcrd/dcrec"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/decred/dcrd/hdkeychain/v3"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -54,7 +53,8 @@ func createWallet(ctx context.Context, cfg *config) error {
 	}
 	loader := loader.NewLoader(activeNet.Params, dbDir, stakeOptions,
 		cfg.GapLimit, cfg.AllowHighFees, cfg.RelayFee.Amount,
-		cfg.AccountGapLimit, cfg.DisableCoinTypeUpgrades, cfg.ManualTickets)
+		cfg.AccountGapLimit, cfg.DisableCoinTypeUpgrades, cfg.ManualTickets,
+		cfg.MixSplitLimit)
 
 	var privPass, pubPass, seed []byte
 	var imported bool
@@ -130,7 +130,8 @@ func createWallet(ctx context.Context, cfg *config) error {
 			return err
 		}
 		pkh := dcrutil.Hash160(child.SerializedPubKey())
-		addr, err := dcrutil.NewAddressPubKeyHash(pkh, chaincfg.SimNetParams(), dcrec.STEcdsaSecp256k1)
+		addr, err := stdaddr.NewAddressPubKeyHashEcdsaSecp256k1V0(pkh,
+			chaincfg.SimNetParams())
 		if err != nil {
 			return err
 		}
@@ -166,7 +167,7 @@ func createSimulationWallet(ctx context.Context, cfg *config) error {
 	// Write the seed to disk, so that we can restore it later
 	// if need be, for testing purposes.
 	seedStr := walletseed.EncodeMnemonic(seed)
-	err = ioutil.WriteFile(filepath.Join(netDir, "seed"), []byte(seedStr), 0644)
+	err = os.WriteFile(filepath.Join(netDir, "seed"), []byte(seedStr), 0644)
 	if err != nil {
 		return err
 	}
@@ -194,17 +195,14 @@ func createSimulationWallet(ctx context.Context, cfg *config) error {
 
 // promptHDPublicKey prompts the user for an extended public key.
 func promptHDPublicKey(reader *bufio.Reader) (string, error) {
-	for {
-		fmt.Print("Enter HD wallet public key: ")
-		keyString, err := reader.ReadString('\n')
-		if err != nil {
-			return "", err
-		}
-
-		keyStringTrimmed := strings.TrimSpace(keyString)
-
-		return keyStringTrimmed, nil
+	fmt.Print("Enter HD wallet public key: ")
+	keyString, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
 	}
+
+	keyStringTrimmed := strings.TrimSpace(keyString)
+	return keyStringTrimmed, nil
 }
 
 // createWatchingOnlyWallet creates a watching only wallet using the passed

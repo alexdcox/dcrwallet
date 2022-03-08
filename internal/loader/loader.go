@@ -12,11 +12,12 @@ import (
 	"path/filepath"
 	"sync"
 
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/wallet"
-	_ "decred.org/dcrwallet/wallet/drivers/bdb" // driver loaded during init
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/wallet"
+	_ "decred.org/dcrwallet/v2/wallet/drivers/bdb" // driver loaded during init
 	"github.com/decred/dcrd/chaincfg/v3"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 )
 
 const (
@@ -45,6 +46,7 @@ type Loader struct {
 	allowHighFees           bool
 	manualTickets           bool
 	relayFee                dcrutil.Amount
+	mixSplitLimit           int
 
 	mu sync.Mutex
 
@@ -55,8 +57,8 @@ type Loader struct {
 type StakeOptions struct {
 	VotingEnabled       bool
 	AddressReuse        bool
-	VotingAddress       dcrutil.Address
-	PoolAddress         dcrutil.Address
+	VotingAddress       stdaddr.StakeAddress
+	PoolAddress         stdaddr.StakeAddress
 	PoolFees            float64
 	StakePoolColdExtKey string
 }
@@ -68,7 +70,7 @@ type DialFunc func(ctx context.Context, network, addr string) (net.Conn, error)
 
 // NewLoader constructs a Loader.
 func NewLoader(chainParams *chaincfg.Params, dbDirPath string, stakeOptions *StakeOptions, gapLimit uint32,
-	allowHighFees bool, relayFee dcrutil.Amount, accountGapLimit int, disableCoinTypeUpgrades bool, manualTickets bool) *Loader {
+	allowHighFees bool, relayFee dcrutil.Amount, accountGapLimit int, disableCoinTypeUpgrades bool, manualTickets bool, mixSplitLimit int) *Loader {
 
 	return &Loader{
 		chainParams:             chainParams,
@@ -80,6 +82,7 @@ func NewLoader(chainParams *chaincfg.Params, dbDirPath string, stakeOptions *Sta
 		allowHighFees:           allowHighFees,
 		manualTickets:           manualTickets,
 		relayFee:                relayFee,
+		mixSplitLimit:           mixSplitLimit,
 	}
 }
 
@@ -189,6 +192,7 @@ func (l *Loader) CreateWatchingOnlyWallet(ctx context.Context, extendedPubKey st
 		ManualTickets:           l.manualTickets,
 		AllowHighFees:           l.allowHighFees,
 		RelayFee:                l.relayFee,
+		MixSplitLimit:           l.mixSplitLimit,
 		Params:                  l.chainParams,
 	}
 	w, err = wallet.Open(ctx, cfg)
@@ -341,6 +345,7 @@ func (l *Loader) OpenExistingWallet(ctx context.Context, pubPassphrase []byte) (
 		ManualTickets:           l.manualTickets,
 		AllowHighFees:           l.allowHighFees,
 		RelayFee:                l.relayFee,
+		MixSplitLimit:           l.mixSplitLimit,
 		Params:                  l.chainParams,
 	}
 	w, err = wallet.Open(ctx, cfg)

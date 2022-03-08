@@ -7,12 +7,13 @@
 package txauthor
 
 import (
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/wallet/txrules"
-	"decred.org/dcrwallet/wallet/txsizes"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/wallet/txrules"
+	"decred.org/dcrwallet/v2/wallet/txsizes"
 	"github.com/decred/dcrd/chaincfg/v3"
-	"github.com/decred/dcrd/dcrutil/v3"
-	"github.com/decred/dcrd/txscript/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
+	"github.com/decred/dcrd/txscript/v4"
+	"github.com/decred/dcrd/txscript/v4/sign"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -190,8 +191,8 @@ func (tx *AuthoredTx) RandomizeChangePosition() {
 // avoid unnecessary conversions from previous output scripts to Addresses.
 // This can not be done without modifications to the txscript package.
 type SecretsSource interface {
-	txscript.KeyDB
-	txscript.ScriptDB
+	sign.KeyDB
+	sign.ScriptDB
 	ChainParams() *chaincfg.Params
 }
 
@@ -212,7 +213,7 @@ func AddAllInputScripts(tx *wire.MsgTx, prevPkScripts [][]byte, secrets SecretsS
 	for i := range inputs {
 		pkScript := prevPkScripts[i]
 		sigScript := inputs[i].SignatureScript
-		script, err := txscript.SignTxOutput(chainParams, tx, i,
+		script, err := sign.SignTxOutput(chainParams, tx, i,
 			pkScript, txscript.SigHashAll, secrets, secrets,
 			sigScript, true) // Yes treasury
 		if err != nil {

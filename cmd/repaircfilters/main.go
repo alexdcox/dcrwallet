@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -21,7 +20,7 @@ import (
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/chaincfg/v3"
 	"github.com/decred/dcrd/crypto/blake256"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/decred/dcrd/wire"
 	"github.com/jessevdk/go-flags"
 	"github.com/jrick/wsrpc/v2"
@@ -163,7 +162,7 @@ func repair() error {
 	defer cffile.Close()
 
 	ctx := context.Background()
-	rpcCertificate, err := ioutil.ReadFile(opts.RPCCertificateFile)
+	rpcCertificate, err := os.ReadFile(opts.RPCCertificateFile)
 	if err != nil {
 		return errContext(err, "failed to read RPC certificate")
 	}

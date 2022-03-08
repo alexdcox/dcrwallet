@@ -6,14 +6,13 @@ package wallet
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"testing"
 
-	_ "decred.org/dcrwallet/wallet/drivers/bdb"
-	"decred.org/dcrwallet/wallet/walletdb"
+	_ "decred.org/dcrwallet/v2/wallet/drivers/bdb"
+	"decred.org/dcrwallet/v2/wallet/walletdb"
 	"github.com/decred/dcrd/chaincfg/v3"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
 )
 
 var basicWalletConfig = Config{
@@ -25,7 +24,7 @@ var basicWalletConfig = Config{
 
 func testWallet(t *testing.T, cfg *Config) (w *Wallet, teardown func()) {
 	ctx := context.Background()
-	f, err := ioutil.TempFile("", "dcrwallet.testdb")
+	f, err := os.CreateTemp("", "dcrwallet.testdb")
 	if err != nil {
 		t.Fatal(err)
 	}

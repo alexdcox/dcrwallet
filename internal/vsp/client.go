@@ -8,21 +8,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 )
 
 type client struct {
 	http.Client
 	url  string
 	pub  []byte
-	sign func(context.Context, string, dcrutil.Address) ([]byte, error)
+	sign func(context.Context, string, stdaddr.Address) ([]byte, error)
 }
 
 type signer interface {
-	SignMessage(ctx context.Context, message string, address dcrutil.Address) ([]byte, error)
+	SignMessage(ctx context.Context, message string, address stdaddr.Address) ([]byte, error)
 }
 
 func newClient(url string, pub []byte, s signer) *client {
@@ -37,7 +36,7 @@ type BadRequestError struct {
 
 func (e *BadRequestError) Error() string { return e.Message }
 
-func (c *client) post(ctx context.Context, path string, addr dcrutil.Address, resp, req interface{}) error {
+func (c *client) post(ctx context.Context, path string, addr stdaddr.Address, resp, req interface{}) error {
 	return c.do(ctx, "POST", path, addr, resp, req)
 }
 
@@ -45,7 +44,7 @@ func (c *client) get(ctx context.Context, path string, resp interface{}) error {
 	return c.do(ctx, "GET", path, nil, resp, nil)
 }
 
-func (c *client) do(ctx context.Context, method, path string, addr dcrutil.Address, resp, req interface{}) error {
+func (c *client) do(ctx context.Context, method, path string, addr stdaddr.Address, resp, req interface{}) error {
 	var reqBody io.Reader
 	var sig []byte
 	if method == "POST" {
@@ -87,7 +86,7 @@ func (c *client) do(ctx context.Context, method, path string, addr dcrutil.Addre
 	if err != nil {
 		return fmt.Errorf("cannot authenticate server: %w", err)
 	}
-	respBody, err := ioutil.ReadAll(reply.Body)
+	respBody, err := io.ReadAll(reply.Body)
 	if err != nil {
 		return fmt.Errorf("read response body: %w", err)
 	}

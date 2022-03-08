@@ -6,22 +6,21 @@ package udb
 
 import (
 	"bytes"
-	"io/ioutil"
 	"os"
 	"testing"
 	"time"
 
-	_ "decred.org/dcrwallet/wallet/drivers/bdb"
-	"decred.org/dcrwallet/wallet/walletdb"
+	_ "decred.org/dcrwallet/v2/wallet/drivers/bdb"
+	"decred.org/dcrwallet/v2/wallet/walletdb"
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/chaincfg/v3"
-	gcs2 "github.com/decred/dcrd/gcs/v2"
-	"github.com/decred/dcrd/gcs/v2/blockcf2"
+	gcs2 "github.com/decred/dcrd/gcs/v3"
+	"github.com/decred/dcrd/gcs/v3/blockcf2"
 	"github.com/decred/dcrd/wire"
 )
 
 func tempDB(t *testing.T) (db walletdb.DB, teardown func()) {
-	f, err := ioutil.TempFile("", "udb")
+	f, err := os.CreateTemp("", "udb")
 	if err != nil {
 		t.Fatal(err)
 	}

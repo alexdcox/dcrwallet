@@ -17,15 +17,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/lru"
-	"decred.org/dcrwallet/version"
-	"github.com/decred/dcrd/addrmgr"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/lru"
+	"decred.org/dcrwallet/v2/version"
+	"github.com/decred/dcrd/addrmgr/v2"
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/chaincfg/v3"
 	"github.com/decred/dcrd/connmgr/v3"
-	"github.com/decred/dcrd/gcs/v2"
-	blockcf "github.com/decred/dcrd/gcs/v2/blockcf2"
+	"github.com/decred/dcrd/gcs/v3"
+	blockcf "github.com/decred/dcrd/gcs/v3/blockcf2"
 	"github.com/decred/dcrd/wire"
 	"golang.org/x/sync/errgroup"
 )
@@ -83,7 +83,7 @@ type RemotePeer struct {
 	pver       uint32
 	initHeight int32
 	raddr      net.Addr
-	na         *wire.NetAddress
+	na         *addrmgr.NetAddress
 
 	// io
 	c       net.Conn
@@ -203,8 +203,8 @@ func (lp *LocalPeer) ConnectOutbound(ctx context.Context, addr string, reqSvcs w
 	}
 
 	// Create a net address with assumed services.
-	na := wire.NewNetAddressTimestamp(time.Now(), wire.SFNodeNetwork,
-		tcpAddr.IP, uint16(tcpAddr.Port))
+	na := addrmgr.NewNetAddressIPPort(tcpAddr.IP, uint16(tcpAddr.Port), wire.SFNodeNetwork)
+	na.Timestamp = time.Now()
 
 	rp, err := lp.connectOutbound(connectCtx, id, addr, na)
 	if err != nil {
@@ -265,7 +265,7 @@ func (lp *LocalPeer) ConnectOutbound(ctx context.Context, addr string, reqSvcs w
 func (lp *LocalPeer) AddrManager() *addrmgr.AddrManager { return lp.amgr }
 
 // NA returns the remote peer's net address.
-func (rp *RemotePeer) NA() *wire.NetAddress { return rp.na }
+func (rp *RemotePeer) NA() *addrmgr.NetAddress { return rp.na }
 
 // UA returns the remote peer's user agent.
 func (rp *RemotePeer) UA() string { return rp.ua }
@@ -330,7 +330,7 @@ func (lp *LocalPeer) SeedPeers(ctx context.Context, services wire.ServiceFlag) {
 			resps <- resp
 		}()
 	}
-	var na []*wire.NetAddress
+	var na []*addrmgr.NetAddress
 	for range seeders {
 		resp := <-resps
 		if resp == nil {
@@ -372,11 +372,11 @@ func (lp *LocalPeer) SeedPeers(ctx context.Context, services wire.ServiceFlag) {
 			}
 			log.Debugf("Discovered peer %v from seeder %v", apiResponse.Host,
 				seeder)
-			na = append(na, &wire.NetAddress{
-				Timestamp: time.Now(),
-				Services:  wire.ServiceFlag(apiResponse.Services),
+			na = append(na, &addrmgr.NetAddress{
 				IP:        ip,
 				Port:      uint16(portNum),
+				Timestamp: time.Now(),
+				Services:  wire.ServiceFlag(apiResponse.Services),
 			})
 		}
 		resp.Body.Close()
@@ -452,7 +452,7 @@ func (mw *msgWriter) write(ctx context.Context, msg wire.Message, pver uint32) e
 	}
 }
 
-func handshake(ctx context.Context, lp *LocalPeer, id uint64, na *wire.NetAddress, c net.Conn) (*RemotePeer, error) {
+func handshake(ctx context.Context, lp *LocalPeer, id uint64, na *addrmgr.NetAddress, c net.Conn) (*RemotePeer, error) {
 	const op errors.Op = "p2p.handshake"
 
 	rp := &RemotePeer{
@@ -504,6 +504,7 @@ func handshake(ctx context.Context, lp *LocalPeer, id uint64, na *wire.NetAddres
 	rp.initHeight = rversion.LastBlock
 	rp.services = rversion.Services
 	rp.ua = rversion.UserAgent
+	c.SetReadDeadline(time.Time{})
 
 	// Negotiate protocol down to compatible version
 	if uint32(rversion.ProtocolVersion) < minPver {
@@ -513,26 +514,11 @@ func handshake(ctx context.Context, lp *LocalPeer, id uint64, na *wire.NetAddres
 		rp.pver = uint32(rversion.ProtocolVersion)
 	}
 
-	// Send the verack
+	// Send the verack.  The received verack is ignored.
 	err = mw.write(ctx, wire.NewMsgVerAck(), rp.pver)
 	if err != nil {
 		return nil, errors.E(op, errors.IO, err)
 	}
-
-	// Wait until a verack is received
-	err = c.SetReadDeadline(time.Now().Add(3 * time.Second))
-	if err != nil {
-		return nil, errors.E(op, errors.IO, err)
-	}
-	msg, _, err = wire.ReadMessage(c, Pver, lp.chainParams.Net)
-	if err != nil {
-		return nil, errors.E(op, errors.IO, err)
-	}
-	_, ok = msg.(*wire.MsgVerAck)
-	if !ok {
-		return nil, errors.E(op, errors.Protocol, "did not receive verack")
-	}
-	c.SetReadDeadline(time.Time{})
 
 	rp.out = make(chan *msgAck)
 	rp.outPrio = make(chan *msgAck)
@@ -541,7 +527,7 @@ func handshake(ctx context.Context, lp *LocalPeer, id uint64, na *wire.NetAddres
 }
 
 func (lp *LocalPeer) connectOutbound(ctx context.Context, id uint64, addr string,
-	na *wire.NetAddress) (*RemotePeer, error) {
+	na *addrmgr.NetAddress) (*RemotePeer, error) {
 
 	var c net.Conn
 	var retryDuration = 5 * time.Second
@@ -606,8 +592,8 @@ func (lp *LocalPeer) serveUntilError(ctx context.Context, rp *RemotePeer) {
 
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		<-ctx.Done()
-		rp.Disconnect(ctx.Err())
+		<-gctx.Done()
+		rp.Disconnect(gctx.Err())
 		rp.c.Close()
 		return nil
 	})
@@ -630,10 +616,10 @@ func (lp *LocalPeer) serveUntilError(ctx context.Context, rp *RemotePeer) {
 	g.Go(func() error {
 		for {
 			select {
-			case <-ctx.Done():
-				return ctx.Err()
+			case <-gctx.Done():
+				return gctx.Err()
 			case <-time.After(2 * time.Minute):
-				ctx, cancel := context.WithDeadline(ctx, time.Now().Add(15*time.Second))
+				ctx, cancel := context.WithDeadline(gctx, time.Now().Add(15*time.Second))
 				rp.pingPong(ctx)
 				cancel()
 			}
@@ -727,7 +713,7 @@ func (rp *RemotePeer) readMessages(ctx context.Context) error {
 		go func() {
 			switch m := msg.(type) {
 			case *wire.MsgAddr:
-				rp.lp.amgr.AddAddresses(m.AddrList, rp.na)
+				rp.receivedAddr(ctx, m)
 			case *wire.MsgBlock:
 				rp.receivedBlock(ctx, m)
 			case *wire.MsgCFilterV2:
@@ -882,6 +868,19 @@ func (rp *RemotePeer) receivedPong(ctx context.Context, msg *wire.MsgPong) {
 	}
 }
 
+func (rp *RemotePeer) receivedAddr(ctx context.Context, msg *wire.MsgAddr) {
+	addrs := make([]*addrmgr.NetAddress, len(msg.AddrList))
+	for i, a := range msg.AddrList {
+		addrs[i] = &addrmgr.NetAddress{
+			IP:        a.IP,
+			Port:      a.Port,
+			Services:  a.Services,
+			Timestamp: a.Timestamp,
+		}
+	}
+	rp.lp.amgr.AddAddresses(addrs, rp.na)
+}
+
 func (rp *RemotePeer) receivedBlock(ctx context.Context, msg *wire.MsgBlock) {
 	const opf = "remotepeer(%v).receivedBlock(%v)"
 	blockHash := msg.Header.BlockHash()
@@ -958,10 +957,25 @@ func (rp *RemotePeer) deleteRequestedHeaders() {
 func (rp *RemotePeer) receivedHeaders(ctx context.Context, msg *wire.MsgHeaders) {
 	const opf = "remotepeer(%v).receivedHeaders"
 	rp.requestedHeadersMu.Lock()
-	for _, h := range msg.Headers {
+	var prevHash chainhash.Hash
+	var prevHeight uint32
+	for i, h := range msg.Headers {
 		hash := h.BlockHash() // Must be type chainhash.Hash
 		rp.knownHeaders.Add(hash)
+
+		// Sanity check the headers connect to each other in sequence.
+		if i > 0 && (!prevHash.IsEqual(&h.PrevBlock) || h.Height != prevHeight+1) {
+			op := errors.Opf(opf, rp.raddr)
+			err := errors.E(op, errors.Protocol, "received out-of-sequence headers")
+			rp.Disconnect(err)
+			rp.requestedHeadersMu.Unlock()
+			return
+		}
+
+		prevHash = hash
+		prevHeight = h.Height
 	}
+
 	if rp.sendheaders {
 		rp.requestedHeadersMu.Unlock()
 		select {
@@ -1523,6 +1537,48 @@ func (rp *RemotePeer) Headers(ctx context.Context, blockLocators []*chainhash.Ha
 	}
 }
 
+// HeadersAsync requests block headers from the RemotePeer with getheaders.
+// Block headers can not be requested concurrently from the same peer.  This
+// can only be used _after_ the sendheaders msg was sent and does _not_ wait
+// for a reply from the remote peer. Headers will be delivered via the
+// ReceiveHeaderAnnouncements call.
+func (rp *RemotePeer) HeadersAsync(ctx context.Context, blockLocators []*chainhash.Hash, hashStop *chainhash.Hash) error {
+	const opf = "remotepeer(%v).Headers"
+
+	rp.requestedHeadersMu.Lock()
+	sendheaders := rp.sendheaders
+	rp.requestedHeadersMu.Unlock()
+	if !sendheaders {
+		op := errors.Opf(opf, rp.raddr)
+		return errors.E(op, errors.Invalid, "asynchronous getheaders before sendheaders is unsupported")
+	}
+
+	m := &wire.MsgGetHeaders{
+		ProtocolVersion:    rp.pver,
+		BlockLocatorHashes: blockLocators,
+		HashStop:           *hashStop,
+	}
+	stalled := time.NewTimer(stallTimeout)
+	out := rp.out
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-stalled.C:
+			op := errors.Opf(opf, rp.raddr)
+			err := errors.E(op, errors.IO, "peer appears stalled")
+			rp.Disconnect(err)
+			return err
+		case <-rp.errc:
+			stalled.Stop()
+			return rp.err
+		case out <- &msgAck{m, nil}:
+			out = nil
+			return nil
+		}
+	}
+}
+
 // PublishTransactions pushes an inventory message advertising transaction
 // hashes of txs.
 func (rp *RemotePeer) PublishTransactions(ctx context.Context, txs ...*wire.MsgTx) error {
@@ -1572,4 +1628,25 @@ func (rp *RemotePeer) sendMessageAck(ctx context.Context, msg wire.Message) erro
 		<-ack
 		return nil
 	}
+}
+
+// ReceivedOrphanHeader increases the banscore for a peer due to them sending
+// an orphan header. Returns an error if the banscore has been breached.
+func (rp *RemotePeer) ReceivedOrphanHeader() error {
+	// Allow up to 10 orphan header chain announcements.
+	delta := uint32(banThreshold / 10)
+	bs := rp.banScore.Increase(0, delta)
+	if bs > banThreshold {
+		return errors.E(errors.Protocol, "ban score reached due to orphan header")
+	}
+	return nil
+}
+
+// SendHeadersSent returns whether this peer was already instructed to send new
+// headers via the sendheaders message.
+func (rp *RemotePeer) SendHeadersSent() bool {
+	rp.requestedHeadersMu.Lock()
+	sent := rp.sendheaders
+	rp.requestedHeadersMu.Unlock()
+	return sent
 }

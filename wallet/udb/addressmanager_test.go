@@ -9,17 +9,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/wallet/walletdb"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/wallet/walletdb"
 	"github.com/decred/dcrd/chaincfg/v3"
-	"github.com/decred/dcrd/dcrec"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
+	"github.com/decred/dcrd/hdkeychain/v3"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 )
 
 // testContext is used to store context information about a running test which
@@ -79,10 +79,10 @@ func testManagedPubKeyAddress(tc *testContext, prefix string, gotAddr ManagedPub
 // provided by the passed managed script address matches the corresponding
 // fields in the provided expected address.
 func testManagedScriptAddress(tc *testContext, prefix string, gotAddr ManagedScriptAddress, wantAddr *expectedAddr) bool {
-	if !bytes.Equal(gotAddr.Address().ScriptAddress(),
+	if !bytes.Equal(gotAddr.AddrHash(),
 		dcrutil.Hash160(wantAddr.script)) {
 		tc.t.Errorf("%s Script: unexpected script  - got %x, want "+
-			"%x", prefix, gotAddr.Address().ScriptAddress(),
+			"%x", prefix, gotAddr.AddrHash(),
 			dcrutil.Hash160(wantAddr.script))
 		return false
 	}
@@ -101,9 +101,9 @@ func testAddress(tc *testContext, prefix string, gotAddr ManagedAddress, wantAdd
 		return false
 	}
 
-	if gotAddr.Address().Address() != wantAddr.address {
+	if gotAddr.Address().String() != wantAddr.address {
 		tc.t.Errorf("%s EncodeAddress: unexpected address - got %s, "+
-			"want %s", prefix, gotAddr.Address().Address(),
+			"want %s", prefix, gotAddr.Address().String(),
 			wantAddr.address)
 		return false
 	}
@@ -285,8 +285,8 @@ func testImportPrivateKey(tc *testContext, ns walletdb.ReadWriteBucket) {
 
 			// Use the Address API to retrieve each of the expected
 			// new addresses and ensure they're accurate.
-			utilAddr, err := dcrutil.NewAddressPubKeyHash(
-				test.expected.addressHash, chainParams, dcrec.STEcdsaSecp256k1)
+			utilAddr, err := stdaddr.NewAddressPubKeyHashEcdsaSecp256k1(0,
+				test.expected.addressHash, chainParams)
 			if err != nil {
 				tc.t.Fatalf("%s NewAddressPubKeyHash #%d (%s): "+
 					"unexpected error: %v", prefix, i, test.name, err)
@@ -299,7 +299,7 @@ func testImportPrivateKey(tc *testContext, ns walletdb.ReadWriteBucket) {
 				continue
 			}
 			if !testAddress(tc, taPrefix, ma, &test.expected) {
-				tc.t.Fatalf("testAddress for %v failed", ma.Address().String())
+				tc.t.Fatalf("testAddress for %v failed", ma.Address())
 			}
 		}
 	}
@@ -380,7 +380,7 @@ func testImportScript(tc *testContext, wb walletdb.ReadWriteBucket) {
 		}
 		if !testAddress(tc, prefix, addr, &test.expected) {
 			tc.t.Fatalf("%s: testAddress failed for %v", prefix,
-				addr.Address().String())
+				addr.Address())
 		}
 	}
 
@@ -393,7 +393,7 @@ func testImportScript(tc *testContext, wb walletdb.ReadWriteBucket) {
 
 			// Use the Address API to retrieve each of the expected
 			// new addresses and ensure they're accurate.
-			utilAddr, err := dcrutil.NewAddressScriptHash(test.in,
+			utilAddr, err := stdaddr.NewAddressScriptHashV0(test.in,
 				chainParams)
 			if err != nil {
 				tc.t.Fatalf("%s NewAddressScriptHash #%d (%s): "+
@@ -407,7 +407,7 @@ func testImportScript(tc *testContext, wb walletdb.ReadWriteBucket) {
 			}
 			if !testAddress(tc, taPrefix, ma, &test.expected) {
 				tc.t.Fatalf("%s: testAddress failed for %v", prefix,
-					ma.Address().String())
+					ma.Address())
 			}
 		}
 	}
@@ -466,6 +466,257 @@ func TestManagerImports(t *testing.T) {
 	tc.watchingOnly = true
 
 	testImports(tc)
+}
+
+// TestImportVotingAccount tests that importing voting accounts works properly.
+//
+// This function expects the manager is already locked when called and returns
+// with the manager locked.
+func TestImportVotingAccount(t *testing.T) {
+	ctx := context.Background()
+	db, mgr, _, _, teardown, err := cloneDB("import_voting_account.kv")
+	defer teardown()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	privTestNet, err := hdkeychain.NewKeyFromString("tprvZUo1ZuEfLLFWg9kt"+
+		"EaXHf3HKq2EdfwY5pXFZ2rbg6HFzeaoJDp1qFZnuuuN6iUAG9EyNF4sH4RmJ"+
+		"b395XWYpdqQoXRoKkV88HZwgq95KfiK", chaincfg.TestNet3Params())
+	if err != nil {
+		t.Fatalf("unable to parse xpriv: %v", err)
+	}
+	account1 := "account 1"
+
+	tests := []struct {
+		name, pass, acctName string
+		want                 uint32
+		wantErr              *errors.Error
+		watchingOnly, unlock bool
+	}{{
+		name:         "ok watching only",
+		acctName:     account1,
+		pass:         "abc",
+		want:         ImportedAddrAccount + 1,
+		watchingOnly: true,
+	}, {
+		name:     "ok locked",
+		acctName: "account 2",
+		pass:     "abc",
+		want:     ImportedAddrAccount + 2,
+	}, {
+		name:     "ok unlocked",
+		acctName: "account 3",
+		pass:     "abc",
+		unlock:   true,
+		want:     ImportedAddrAccount + 3,
+	}, {
+		name:     "name taken",
+		acctName: account1,
+		pass:     "abc",
+		wantErr:  &errors.Error{Kind: errors.Exist},
+	}, {
+		name:     "no password",
+		acctName: "account 4",
+		wantErr:  &errors.Error{Kind: errors.Passphrase},
+	}, {
+		name:    "no name",
+		pass:    "abc",
+		wantErr: &errors.Error{Kind: errors.Invalid},
+	}}
+
+	for i, test := range tests {
+		tc := &testContext{
+			t:            t,
+			db:           db,
+			manager:      mgr,
+			create:       true,
+			watchingOnly: test.watchingOnly,
+		}
+		prefix := testNamePrefix(tc)
+		prefix = fmt.Sprintf("%s ImportVotingAccount #%d (%s)", prefix,
+			i, test.name)
+		err := walletdb.Update(ctx, tc.db, func(tx walletdb.ReadWriteTx) error {
+			ns := tx.ReadWriteBucket(waddrmgrBucketKey)
+			if test.unlock {
+				if err := tc.manager.Unlock(ns, privPassphrase); err != nil {
+					tc.t.Fatalf("%s: Unlock: unexpected error: %v", prefix, err)
+				}
+				tc.unlocked = true
+				defer func() {
+					if err := tc.manager.Lock(); err != nil {
+						tc.t.Fatalf("%s: Lock: unexpected error: %v",
+							prefix, err)
+					}
+					tc.unlocked = false
+				}()
+			}
+			pass := []byte(test.pass)
+			got, err := tc.manager.ImportVotingAccount(tx, privTestNet,
+				pass, test.acctName)
+			if test.wantErr != nil {
+				if err == nil {
+					tc.t.Fatalf("%s: wanted error %v but got none",
+						prefix, test.wantErr)
+				}
+				kind := err.(*errors.Error).Kind
+				if !test.wantErr.Is(kind) {
+					tc.t.Fatalf("%s: wanted error %v but got %v",
+						prefix, test.wantErr, kind)
+				}
+				return nil
+			}
+			if err != nil {
+				tc.t.Fatalf("%s: unexpected error: %v", prefix, err)
+			}
+			if got != test.want {
+				tc.t.Fatalf("%s: wanted account number %d but got %d", prefix,
+					test.want, got)
+			}
+
+			if err := tc.manager.UnlockAccount(tx, got, pass); err != nil {
+				tc.t.Fatalf("%s: Unlock: unexpected error: %v", prefix, err)
+			}
+			defer tc.manager.mtx.Unlock()
+			tc.manager.mtx.Lock()
+			acctInfo, err := tc.manager.loadAccountInfo(ns, got)
+			if err != nil {
+				tc.t.Fatalf("%s: unexpected error: %v", prefix, err)
+			}
+			// Enusure the account type is importedVoting.
+			if acctInfo.acctType != importedVoting {
+				tc.t.Fatalf("%s: wanted account type %v but got %v", prefix,
+					importedVoting, acctInfo.acctType)
+			}
+			// Enusure xpriv is the same.
+			if acctInfo.acctKeyPriv.String() != privTestNet.String() {
+				tc.t.Fatalf("%s: wanted account xpriv %v but got %v", prefix,
+					privTestNet, acctInfo.acctKeyPriv)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
+}
+
+// TestImportAccount tests that importing accounts works properly.
+//
+// This function expects the manager is already locked when called and returns
+// with the manager locked.
+func TestImportAccount(t *testing.T) {
+	ctx := context.Background()
+	db, mgr, _, _, teardown, err := cloneDB("import_account.kv")
+	defer teardown()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Close()
+	privTestNet, err := hdkeychain.NewKeyFromString("tprvZUo1ZuEfLLFWg9kt"+
+		"EaXHf3HKq2EdfwY5pXFZ2rbg6HFzeaoJDp1qFZnuuuN6iUAG9EyNF4sH4RmJ"+
+		"b395XWYpdqQoXRoKkV88HZwgq95KfiK", chaincfg.TestNet3Params())
+	if err != nil {
+		t.Fatalf("unable to parse xpriv: %v", err)
+	}
+	account1 := "account 1"
+
+	tests := []struct {
+		name, acctName              string
+		want                        uint32
+		wantErr                     *errors.Error
+		watchingOnly, discoverUsage bool
+	}{{
+		name:         "ok watching only",
+		acctName:     account1,
+		want:         ImportedAddrAccount + 1,
+		watchingOnly: true,
+	}, {
+		name:     "ok",
+		acctName: "account 2",
+		want:     ImportedAddrAccount + 2,
+	}, {
+		name:     "name taken",
+		acctName: account1,
+		wantErr:  &errors.Error{Kind: errors.Exist},
+	}, {
+		name:          "address exists",
+		acctName:      "account 3",
+		discoverUsage: true,
+		wantErr:       &errors.Error{Kind: errors.Exist},
+	}, {
+		name:    "no name",
+		wantErr: &errors.Error{Kind: errors.Invalid},
+	}}
+
+	for i, test := range tests {
+		tc := &testContext{
+			t:            t,
+			db:           db,
+			manager:      mgr,
+			create:       true,
+			watchingOnly: test.watchingOnly,
+		}
+		prefix := testNamePrefix(tc)
+		prefix = fmt.Sprintf("%s importAccount #%d (%s)", prefix,
+			i, test.name)
+		err := walletdb.Update(ctx, tc.db, func(tx walletdb.ReadWriteTx) error {
+			ns := tx.ReadWriteBucket(waddrmgrBucketKey)
+			if err := tc.manager.Unlock(ns, privPassphrase); err != nil {
+				tc.t.Fatalf("%s: Unlock: unexpected error: %v", prefix, err)
+			}
+			tc.unlocked = true
+			defer func() {
+				if err := tc.manager.Lock(); err != nil {
+					tc.t.Fatalf("%s: Lock: unexpected error: %v",
+						prefix, err)
+				}
+				tc.unlocked = false
+			}()
+			if test.discoverUsage {
+				err = mgr.SyncAccountToAddrIndex(ns, ImportedAddrAccount+1, 0, ExternalBranch)
+				if err != nil {
+					return err
+				}
+			}
+			got, err := tc.manager.importAccount(tx, actBIP0044,
+				privTestNet, test.acctName)
+			if test.wantErr != nil {
+				if err == nil {
+					tc.t.Fatalf("%s: wanted error %v but got none",
+						prefix, test.wantErr)
+				}
+				kind := err.(*errors.Error).Kind
+				if !test.wantErr.Is(kind) {
+					tc.t.Fatalf("%s: wanted error %v but got %v",
+						prefix, test.wantErr, kind)
+				}
+				return nil
+			}
+			if err != nil {
+				tc.t.Fatalf("%s: unexpected error: %v", prefix, err)
+			}
+			if got != test.want {
+				tc.t.Fatalf("%s: wanted account number %d but got %d", prefix,
+					test.want, got)
+			}
+			defer tc.manager.mtx.Unlock()
+			tc.manager.mtx.Lock()
+			acctInfo, err := tc.manager.loadAccountInfo(ns, got)
+			if err != nil {
+				tc.t.Fatalf("%s: unexpected error: %v", prefix, err)
+			}
+			// Enusure xpriv is the same.
+			if acctInfo.acctKeyPriv.String() != privTestNet.String() {
+				tc.t.Fatalf("%s: wanted account xpriv %v but got %v", prefix,
+					privTestNet, acctInfo.acctKeyPriv)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	}
 }
 
 // testChangePassphrase ensures changes both the public and private passphrases
@@ -1006,7 +1257,7 @@ func TestManager(t *testing.T) {
 }
 
 func TestMain(m *testing.M) {
-	testDir, err := ioutil.TempDir("", "udb-")
+	testDir, err := os.MkdirTemp("", "udb-")
 	if err != nil {
 		fmt.Printf("Unable to create temp directory: %v", err)
 		os.Exit(1)

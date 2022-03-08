@@ -7,12 +7,12 @@ package wallet
 import (
 	"context"
 
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/wallet/txrules"
-	"decred.org/dcrwallet/wallet/txsizes"
-	"decred.org/dcrwallet/wallet/udb"
-	"decred.org/dcrwallet/wallet/walletdb"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/wallet/txrules"
+	"decred.org/dcrwallet/v2/wallet/txsizes"
+	"decred.org/dcrwallet/v2/wallet/udb"
+	"decred.org/dcrwallet/v2/wallet/walletdb"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -35,7 +35,7 @@ func (w *Wallet) FetchP2SHMultiSigOutput(ctx context.Context, outPoint *wire.Out
 			return err
 		}
 
-		addr, _ := dcrutil.NewAddressScriptHashFromHash(mso.ScriptHash[:], w.chainParams)
+		addr, _ := stdaddr.NewAddressScriptHashV0FromHash(mso.ScriptHash[:], w.chainParams)
 		redeemScript, err = w.manager.RedeemScript(addrmgrNs, addr)
 		return err
 	})
@@ -43,7 +43,7 @@ func (w *Wallet) FetchP2SHMultiSigOutput(ctx context.Context, outPoint *wire.Out
 		return nil, errors.E(op, err)
 	}
 
-	p2shAddr, err := dcrutil.NewAddressScriptHashFromHash(
+	p2shAddr, err := stdaddr.NewAddressScriptHashV0FromHash(
 		mso.ScriptHash[:], w.chainParams)
 	if err != nil {
 		return nil, err

@@ -3,13 +3,14 @@
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
-//+build !generate
+//go:build !generate
+// +build !generate
 
 package rpchelp
 
 import (
-	"decred.org/dcrwallet/rpc/jsonrpc/types"
-	dcrdtypes "github.com/decred/dcrd/rpc/jsonrpc/types/v2"
+	"decred.org/dcrwallet/v2/rpc/jsonrpc/types"
+	dcrdtypes "github.com/decred/dcrd/rpc/jsonrpc/types/v3"
 )
 
 // Common return types.
@@ -39,6 +40,7 @@ var Methods = []struct {
 	{"createnewaccount", nil},
 	{"createrawtransaction", returnsString},
 	{"createsignature", []interface{}{(*types.CreateSignatureResult)(nil)}},
+	{"disapprovepercent", []interface{}{(*uint32)(nil)}},
 	{"discoverusage", nil},
 	{"dumpprivkey", returnsString},
 	{"fundrawtransaction", []interface{}{(*types.FundRawTransactionResult)(nil)}},
@@ -51,7 +53,10 @@ var Methods = []struct {
 	{"getbestblockhash", returnsString},
 	{"getblockcount", returnsNumber},
 	{"getblockhash", returnsString},
+	{"getblockheader", []interface{}{(*dcrdtypes.GetBlockHeaderVerboseResult)(nil)}},
+	{"getblock", []interface{}{(*dcrdtypes.GetBlockVerboseResult)(nil)}},
 	{"getcoinjoinsbyacct", []interface{}{(*map[string]uint32)(nil)}},
+	{"getcurrentnet", []interface{}{(*uint32)(nil)}},
 	{"getinfo", []interface{}{(*types.InfoWalletResult)(nil)}},
 	{"getmasterpubkey", []interface{}{(*string)(nil)}},
 	{"getmultisigoutinfo", []interface{}{(*types.GetMultisigOutInfoResult)(nil)}},
@@ -63,9 +68,11 @@ var Methods = []struct {
 	{"getstakeinfo", []interface{}{(*types.GetStakeInfoResult)(nil)}},
 	{"gettickets", []interface{}{(*types.GetTicketsResult)(nil)}},
 	{"gettransaction", []interface{}{(*types.GetTransactionResult)(nil)}},
+	{"gettxout", []interface{}{(*dcrdtypes.GetTxOutResult)(nil)}},
 	{"getunconfirmedbalance", returnsNumber},
 	{"getvotechoices", []interface{}{(*types.GetVoteChoicesResult)(nil)}},
 	{"getwalletfee", returnsNumber},
+	{"getcfilterv2", []interface{}{(*types.GetCFilterV2Result)(nil)}},
 	{"help", append(returnsString, returnsString[0])},
 	{"importcfiltersv2", nil},
 	{"importprivkey", nil},
@@ -86,6 +93,7 @@ var Methods = []struct {
 	{"mixaccount", nil},
 	{"mixoutput", nil},
 	{"purchaseticket", returnsString},
+	{"processunmanagedticket", nil},
 	{"redeemmultisigout", []interface{}{(*types.RedeemMultiSigOutResult)(nil)}},
 	{"redeemmultisigouts", []interface{}{(*types.RedeemMultiSigOutResult)(nil)}},
 	{"renameaccount", nil},
@@ -99,6 +107,7 @@ var Methods = []struct {
 	{"sendtomultisig", returnsString},
 	{"sendtotreasury", returnsString},
 	{"setaccountpassphrase", nil},
+	{"setdisapprovepercent", nil},
 	{"settreasurypolicy", nil},
 	{"settspendpolicy", nil},
 	{"settxfee", returnsBool},

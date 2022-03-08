@@ -5,11 +5,14 @@ import (
 	"context"
 	"crypto/subtle"
 
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/wallet/walletdb"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/wallet/walletdb"
 	"github.com/decred/dcrd/dcrec"
-	"github.com/decred/dcrd/dcrutil/v3"
-	"github.com/decred/dcrd/txscript/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
+	"github.com/decred/dcrd/txscript/v4"
+	"github.com/decred/dcrd/txscript/v4/sign"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
+	"github.com/decred/dcrd/txscript/v4/stdscript"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -73,15 +76,16 @@ func (c *csppJoin) Gen() ([][]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		script, version, err := addressScript(mixAddr)
-		if err != nil {
-			return nil, err
-		}
+		version, script := mixAddr.PaymentScript()
 		if version != 0 {
 			return nil, errors.E("expected script version 0")
 		}
+		hash160er, ok := mixAddr.(stdaddr.Hash160er)
+		if !ok {
+			return nil, errors.E("address does not have Hash160 method")
+		}
 		c.genScripts[i] = script
-		gen[i] = mixAddr.Hash160()[:]
+		gen[i] = hash160er.Hash160()[:]
 	}
 	err := walletdb.Update(c.ctx, c.wallet.db, func(dbtx walletdb.ReadWriteTx) error {
 		for _, f := range updates {
@@ -110,14 +114,11 @@ func (c *csppJoin) Confirm() error {
 			in = c.tx.TxIn[index]
 
 			const scriptVersion = 0
-			_, addrs, _, err := txscript.ExtractPkScriptAddrs(scriptVersion, outScript, c.wallet.chainParams, true) // Yes treasury
-			if err != nil {
-				return err
-			}
+			_, addrs := stdscript.ExtractAddrs(scriptVersion, outScript, c.wallet.chainParams)
 			if len(addrs) != 1 {
 				continue
 			}
-			apkh, ok := addrs[0].(*dcrutil.AddressPubKeyHash)
+			apkh, ok := addrs[0].(*stdaddr.AddressPubKeyHashEcdsaSecp256k1V0)
 			if !ok {
 				return errors.E(errors.Bug, "previous output is not P2PKH")
 			}
@@ -126,7 +127,7 @@ func (c *csppJoin) Confirm() error {
 				return err
 			}
 			defer done()
-			sigscript, err := txscript.SignatureScript(c.tx, index, outScript,
+			sigscript, err := sign.SignatureScript(c.tx, index, outScript,
 				txscript.SigHashAll, privKey.Serialize(), dcrec.STEcdsaSecp256k1, true)
 			if err != nil {
 				return errors.E(errors.Op("txscript.SignatureScript"), err)

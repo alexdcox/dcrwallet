@@ -10,16 +10,16 @@ import (
 	"os"
 	"path/filepath"
 
-	"decred.org/dcrwallet/chain"
-	"decred.org/dcrwallet/internal/loader"
-	"decred.org/dcrwallet/internal/rpc/jsonrpc"
-	"decred.org/dcrwallet/internal/rpc/rpcserver"
-	"decred.org/dcrwallet/internal/vsp"
-	"decred.org/dcrwallet/p2p"
-	"decred.org/dcrwallet/spv"
-	"decred.org/dcrwallet/ticketbuyer"
-	"decred.org/dcrwallet/wallet"
-	"decred.org/dcrwallet/wallet/udb"
+	"decred.org/dcrwallet/v2/chain"
+	"decred.org/dcrwallet/v2/internal/loader"
+	"decred.org/dcrwallet/v2/internal/rpc/jsonrpc"
+	"decred.org/dcrwallet/v2/internal/rpc/rpcserver"
+	"decred.org/dcrwallet/v2/internal/vsp"
+	"decred.org/dcrwallet/v2/p2p"
+	"decred.org/dcrwallet/v2/spv"
+	"decred.org/dcrwallet/v2/ticketbuyer"
+	"decred.org/dcrwallet/v2/wallet"
+	"decred.org/dcrwallet/v2/wallet/udb"
 	"github.com/decred/dcrd/connmgr/v3"
 	"github.com/decred/slog"
 	"github.com/jrick/logrotate/rotator"
@@ -31,7 +31,9 @@ type logWriter struct{}
 
 func (logWriter) Write(p []byte) (n int, err error) {
 	os.Stdout.Write(p)
-	logRotator.Write(p)
+	if logRotator != nil {
+		logRotator.Write(p)
+	}
 	return len(p), nil
 }
 
@@ -93,16 +95,19 @@ var subsystemLoggers = map[string]slog.Logger{
 }
 
 // initLogRotator initializes the logging rotater to write logs to logFile and
-// create roll files in the same directory.  It must be called before the
-// package-global log rotater variables are used.
-func initLogRotator(logFile string) {
+// create roll files in the same directory.  logSize is the size in KiB after
+// which a log file will be rotated and compressed.
+//
+// This function must be called before the package-global log rotater variables
+// are used.
+func initLogRotator(logFile string, logSize int64) {
 	logDir, _ := filepath.Split(logFile)
 	err := os.MkdirAll(logDir, 0700)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create log directory: %v\n", err)
 		os.Exit(1)
 	}
-	r, err := rotator.New(logFile, 10*1024, false, 0)
+	r, err := rotator.New(logFile, logSize, false, 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to create file rotator: %v\n", err)
 		os.Exit(1)

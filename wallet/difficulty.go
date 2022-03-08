@@ -13,13 +13,13 @@ import (
 	"math/big"
 	"time"
 
-	"decred.org/dcrwallet/deployments"
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/wallet/walletdb"
+	"decred.org/dcrwallet/v2/deployments"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/wallet/walletdb"
 	blockchain "github.com/decred/dcrd/blockchain/standalone/v2"
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/chaincfg/v3"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -514,7 +514,7 @@ func (w *Wallet) validateHeaderChainDifficulties(dbtx walletdb.ReadTx, chain []*
 	for ; idx < len(chain); idx++ {
 		n := chain[idx]
 		h := n.Header
-		hash := h.BlockHash()
+		hash := n.Hash
 		if parent == nil && h.Height != 0 {
 			if idx == 0 {
 				var err error
@@ -534,10 +534,10 @@ func (w *Wallet) validateHeaderChainDifficulties(dbtx walletdb.ReadTx, chain []*
 		}
 		if h.Bits != bits {
 			err := errors.Errorf("%v has invalid PoW difficulty, got %x, want %x",
-				&hash, h.Bits, bits)
+				hash, h.Bits, bits)
 			return chain[idx:], errors.E(op, errors.Consensus, err)
 		}
-		err = blockchain.CheckProofOfWork(&hash, h.Bits, w.chainParams.PowLimit)
+		err = blockchain.CheckProofOfWork(hash, h.Bits, w.chainParams.PowLimit)
 		if err != nil {
 			return chain[idx:], errors.E(op, errors.Consensus, err)
 		}
@@ -550,7 +550,7 @@ func (w *Wallet) validateHeaderChainDifficulties(dbtx walletdb.ReadTx, chain []*
 			}
 			if dcrutil.Amount(h.SBits) != sdiff {
 				err := errors.Errorf("%v has invalid PoS difficulty, got %v, want %v",
-					&hash, dcrutil.Amount(h.SBits), sdiff)
+					hash, dcrutil.Amount(h.SBits), sdiff)
 				return chain[idx:], errors.E(op, errors.Consensus, err)
 			}
 		}

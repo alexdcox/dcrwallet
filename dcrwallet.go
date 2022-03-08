@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -19,18 +18,18 @@ import (
 	"runtime/pprof"
 	"time"
 
-	"decred.org/dcrwallet/chain"
-	"decred.org/dcrwallet/errors"
-	ldr "decred.org/dcrwallet/internal/loader"
-	"decred.org/dcrwallet/internal/prompt"
-	"decred.org/dcrwallet/internal/rpc/rpcserver"
-	"decred.org/dcrwallet/internal/vsp"
-	"decred.org/dcrwallet/p2p"
-	"decred.org/dcrwallet/spv"
-	"decred.org/dcrwallet/ticketbuyer"
-	"decred.org/dcrwallet/version"
-	"decred.org/dcrwallet/wallet"
-	"github.com/decred/dcrd/addrmgr"
+	"decred.org/dcrwallet/v2/chain"
+	"decred.org/dcrwallet/v2/errors"
+	ldr "decred.org/dcrwallet/v2/internal/loader"
+	"decred.org/dcrwallet/v2/internal/prompt"
+	"decred.org/dcrwallet/v2/internal/rpc/rpcserver"
+	"decred.org/dcrwallet/v2/internal/vsp"
+	"decred.org/dcrwallet/v2/p2p"
+	"decred.org/dcrwallet/v2/spv"
+	"decred.org/dcrwallet/v2/ticketbuyer"
+	"decred.org/dcrwallet/v2/version"
+	"decred.org/dcrwallet/v2/wallet"
+	"github.com/decred/dcrd/addrmgr/v2"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -93,6 +92,9 @@ func run(ctx context.Context) error {
 	// Show version at startup.
 	log.Infof("Version %s (Go version %s %s/%s)", version.String(), runtime.Version(),
 		runtime.GOOS, runtime.GOARCH)
+	if cfg.NoFileLogging {
+		log.Info("File logging disabled")
+	}
 
 	// Read IPC messages from the read end of a pipe created and passed by the
 	// parent process, if any.  When this pipe is closed, shutdown is
@@ -162,7 +164,8 @@ func run(ctx context.Context) error {
 	}
 	loader := ldr.NewLoader(activeNet.Params, dbDir, stakeOptions,
 		cfg.GapLimit, cfg.AllowHighFees, cfg.RelayFee.Amount,
-		cfg.AccountGapLimit, cfg.DisableCoinTypeUpgrades, cfg.ManualTickets)
+		cfg.AccountGapLimit, cfg.DisableCoinTypeUpgrades, cfg.ManualTickets,
+		cfg.MixSplitLimit)
 	loader.DialCSPPServer = cfg.dialCSPPServer
 
 	// Stop any services started by the loader after the shutdown procedure is
@@ -243,7 +246,7 @@ func run(ctx context.Context) error {
 			passphrase = startPromptPass(ctx, w)
 		}
 
-		if cfg.EnableTicketBuyer && cfg.VSPOpts.URL != "" {
+		if cfg.VSPOpts.URL != "" {
 			changeAccountName := cfg.ChangeAccount
 			if changeAccountName == "" && cfg.CSPPServer == "" {
 				log.Warnf("Change account not set, using "+
@@ -417,7 +420,7 @@ func run(ctx context.Context) error {
 		}
 
 		loader.RunAfterLoad(func(w *wallet.Wallet) {
-			if cfg.VSPOpts.Sync {
+			if vspClient != nil && cfg.VSPOpts.Sync {
 				vspClient.ProcessManagedTickets(ctx, vspClient.Policy)
 			}
 
@@ -572,7 +575,7 @@ func readCAFile() []byte {
 	var certs []byte
 	if !cfg.DisableClientTLS {
 		var err error
-		certs, err = ioutil.ReadFile(cfg.CAFile.Value)
+		certs, err = os.ReadFile(cfg.CAFile.Value)
 		if err != nil {
 			log.Warnf("Cannot open CA file: %v", err)
 			// If there's an error reading the CA file, continue

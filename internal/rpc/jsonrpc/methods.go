@@ -21,39 +21,54 @@ import (
 	"sync"
 	"time"
 
-	"decred.org/dcrwallet/errors"
+	"decred.org/dcrwallet/v2/errors"
 	"decred.org/dcrwallet/internal/loader"
-	"decred.org/dcrwallet/p2p"
-	"decred.org/dcrwallet/rpc/client/dcrd"
-	"decred.org/dcrwallet/rpc/jsonrpc/types"
-	"decred.org/dcrwallet/spv"
-	"decred.org/dcrwallet/version"
-	"decred.org/dcrwallet/wallet"
-	"decred.org/dcrwallet/wallet/txauthor"
-	"decred.org/dcrwallet/wallet/txrules"
-	"decred.org/dcrwallet/wallet/txsizes"
-	"decred.org/dcrwallet/wallet/udb"
-	"github.com/decred/dcrd/blockchain/stake/v3"
+	"decred.org/dcrwallet/v2/internal/loader"
+	"decred.org/dcrwallet/v2/internal/vsp"
+	"decred.org/dcrwallet/v2/p2p"
+	"decred.org/dcrwallet/v2/rpc/client/dcrd"
+	"decred.org/dcrwallet/v2/rpc/jsonrpc/types"
+	"decred.org/dcrwallet/v2/spv"
+	"decred.org/dcrwallet/v2/version"
+	"decred.org/dcrwallet/v2/wallet"
+	"decred.org/dcrwallet/v2/wallet/txauthor"
+	"decred.org/dcrwallet/v2/wallet/txrules"
+	"decred.org/dcrwallet/v2/wallet/txsizes"
+	"decred.org/dcrwallet/v2/wallet/udb"
+	"github.com/decred/dcrd/blockchain/stake/v4"
 	blockchain "github.com/decred/dcrd/blockchain/standalone/v2"
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/chaincfg/v3"
 	"github.com/decred/dcrd/dcrec"
-	"github.com/decred/dcrd/dcrec/secp256k1/v3"
-	"github.com/decred/dcrd/dcrjson/v3"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/decred/dcrd/dcrjson/v4"
+	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/decred/dcrd/hdkeychain/v3"
-	dcrdtypes "github.com/decred/dcrd/rpc/jsonrpc/types/v2"
-	"github.com/decred/dcrd/txscript/v3"
+	dcrdtypes "github.com/decred/dcrd/rpc/jsonrpc/types/v3"
+	"github.com/decred/dcrd/txscript/v4"
+	"github.com/decred/dcrd/txscript/v4/sign"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
+	"github.com/decred/dcrd/txscript/v4/stdscript"
 	"github.com/decred/dcrd/wire"
 	"golang.org/x/sync/errgroup"
 )
 
 // API version constants
 const (
-	jsonrpcSemverString = "8.5.0"
+	jsonrpcSemverString = "8.8.0"
 	jsonrpcSemverMajor  = 8
-	jsonrpcSemverMinor  = 5
+	jsonrpcSemverMinor  = 8
 	jsonrpcSemverPatch  = 0
+)
+
+const (
+	// sstxCommitmentString is the string to insert when a verbose
+	// transaction output's pkscript type is a ticket commitment.
+	sstxCommitmentString = "sstxcommitment"
+
+	// The assumed output script version is defined to assist with refactoring
+	// to use actual script versions.
+	scriptVersionAssumed = 0
 )
 
 // confirms returns the number of confirmations for a transaction in a block at
@@ -82,6 +97,7 @@ var handlers = map[string]handler{
 	"createnewaccount":        {fn: (*Server).createNewAccount},
 	"createrawtransaction":    {fn: (*Server).createRawTransaction},
 	"createsignature":         {fn: (*Server).createSignature},
+	"disapprovepercent":       {fn: (*Server).disapprovePercent},
 	"discoverusage":           {fn: (*Server).discoverUsage},
 	"dumpprivkey":             {fn: (*Server).dumpPrivKey},
 	"fundrawtransaction":      {fn: (*Server).fundRawTransaction},
@@ -94,7 +110,10 @@ var handlers = map[string]handler{
 	"getbestblockhash":        {fn: (*Server).getBestBlockHash},
 	"getblockcount":           {fn: (*Server).getBlockCount},
 	"getblockhash":            {fn: (*Server).getBlockHash},
+	"getblockheader":          {fn: (*Server).getBlockHeader},
+	"getblock":                {fn: (*Server).getBlock},
 	"getcoinjoinsbyacct":      {fn: (*Server).getcoinjoinsbyacct},
+	"getcurrentnet":           {fn: (*Server).getCurrentNet},
 	"getinfo":                 {fn: (*Server).getInfo},
 	"getmasterpubkey":         {fn: (*Server).getMasterPubkey},
 	"getmultisigoutinfo":      {fn: (*Server).getMultisigOutInfo},
@@ -106,10 +125,12 @@ var handlers = map[string]handler{
 	"getstakeinfo":            {fn: (*Server).getStakeInfo},
 	"gettickets":              {fn: (*Server).getTickets},
 	"gettransaction":          {fn: (*Server).getTransaction},
+	"gettxout":                {fn: (*Server).getTxOut},
 	"getunconfirmedbalance":   {fn: (*Server).getUnconfirmedBalance},
 	"getvotechoices":          {fn: (*Server).getVoteChoices},
 	"getwalletfee":            {fn: (*Server).getWalletFee},
 	"help":                    {fn: (*Server).help},
+	"getcfilterv2":            {fn: (*Server).getCFilterV2},
 	"importcfiltersv2":        {fn: (*Server).importCFiltersV2},
 	"importprivkey":           {fn: (*Server).importPrivKey},
 	"importpubkey":            {fn: (*Server).importPubKey},
@@ -129,6 +150,7 @@ var handlers = map[string]handler{
 	"mixaccount":              {fn: (*Server).mixAccount},
 	"mixoutput":               {fn: (*Server).mixOutput},
 	"purchaseticket":          {fn: (*Server).purchaseTicket},
+	"processunmanagedticket":  {fn: (*Server).processUnmanagedTicket},
 	"redeemmultisigout":       {fn: (*Server).redeemMultiSigOut},
 	"redeemmultisigouts":      {fn: (*Server).redeemMultiSigOuts},
 	"renameaccount":           {fn: (*Server).renameAccount},
@@ -142,6 +164,7 @@ var handlers = map[string]handler{
 	"sendtomultisig":          {fn: (*Server).sendToMultiSig},
 	"sendtotreasury":          {fn: (*Server).sendToTreasury},
 	"setaccountpassphrase":    {fn: (*Server).setAccountPassphrase},
+	"setdisapprovepercent":    {fn: (*Server).setDisapprovePercent},
 	"settreasurypolicy":       {fn: (*Server).setTreasuryPolicy},
 	"settspendpolicy":         {fn: (*Server).setTSpendPolicy},
 	"settxfee":                {fn: (*Server).setTxFee},
@@ -370,8 +393,8 @@ func (s *Server) accountSyncAddressIndex(ctx context.Context, icmd interface{}) 
 
 // walletPubKeys decodes each encoded key or address to a public key.  If the
 // address is P2PKH, the wallet is queried for the public key.
-func walletPubKeys(ctx context.Context, w *wallet.Wallet, keys []string) ([]*dcrutil.AddressSecpPubKey, error) {
-	pubKeyAddrs := make([]*dcrutil.AddressSecpPubKey, len(keys))
+func walletPubKeys(ctx context.Context, w *wallet.Wallet, keys []string) ([][]byte, error) {
+	pubKeys := make([][]byte, len(keys))
 
 	for i, key := range keys {
 		addr, err := decodeAddress(key, w.ChainParams())
@@ -379,8 +402,8 @@ func walletPubKeys(ctx context.Context, w *wallet.Wallet, keys []string) ([]*dcr
 			return nil, err
 		}
 		switch addr := addr.(type) {
-		case *dcrutil.AddressSecpPubKey:
-			pubKeyAddrs[i] = addr
+		case *stdaddr.AddressPubKeyEcdsaSecp256k1V0:
+			pubKeys[i] = addr.SerializedPubKey()
 			continue
 		}
 
@@ -399,14 +422,10 @@ func walletPubKeys(ctx context.Context, w *wallet.Wallet, keys []string) ([]*dcr
 			err = errors.New("address has no associated public key")
 			return nil, rpcError(dcrjson.ErrRPCInvalidAddressOrKey, err)
 		}
-		pubKeyAddr, err := dcrutil.NewAddressSecpPubKey(pubKey, w.ChainParams())
-		if err != nil {
-			return nil, err
-		}
-		pubKeyAddrs[i] = pubKeyAddr
+		pubKeys[i] = pubKey
 	}
 
-	return pubKeyAddrs, nil
+	return pubKeys, nil
 }
 
 // addMultiSigAddress handles an addmultisigaddress request by adding a
@@ -427,7 +446,7 @@ func (s *Server) addMultiSigAddress(ctx context.Context, icmd interface{}) (inte
 	if err != nil {
 		return nil, err
 	}
-	script, err := txscript.MultiSigScript(pubKeyAddrs, cmd.NRequired)
+	script, err := stdscript.MultiSigScriptV0(cmd.NRequired, pubKeyAddrs...)
 	if err != nil {
 		return nil, err
 	}
@@ -437,7 +456,7 @@ func (s *Server) addMultiSigAddress(ctx context.Context, icmd interface{}) (inte
 		return nil, err
 	}
 
-	return dcrutil.NewAddressScriptHash(script, w.ChainParams())
+	return stdaddr.NewAddressScriptHashV0(script, w.ChainParams())
 }
 
 func (s *Server) addTransaction(ctx context.Context, icmd interface{}) (interface{}, error) {
@@ -567,7 +586,7 @@ func (s *Server) consolidate(ctx context.Context, icmd interface{}) (interface{}
 	}
 
 	// Set change address if specified.
-	var changeAddr dcrutil.Address
+	var changeAddr stdaddr.Address
 	if cmd.Address != nil {
 		if *cmd.Address != "" {
 			addr, err := decodeAddress(*cmd.Address, w.ChainParams())
@@ -597,29 +616,29 @@ func (s *Server) createMultiSig(ctx context.Context, icmd interface{}) (interfac
 		return nil, errUnloadedWallet
 	}
 
-	pubKeyAddrs, err := walletPubKeys(ctx, w, cmd.Keys)
+	pubKeys, err := walletPubKeys(ctx, w, cmd.Keys)
 	if err != nil {
 		return nil, err
 	}
-	script, err := txscript.MultiSigScript(pubKeyAddrs, cmd.NRequired)
+	script, err := stdscript.MultiSigScriptV0(cmd.NRequired, pubKeys...)
 	if err != nil {
 		return nil, err
 	}
 
-	address, err := dcrutil.NewAddressScriptHash(script, w.ChainParams())
+	address, err := stdaddr.NewAddressScriptHashV0(script, w.ChainParams())
 	if err != nil {
 		return nil, err
 	}
 
 	return types.CreateMultiSigResult{
-		Address:      address.Address(),
+		Address:      address.String(),
 		RedeemScript: hex.EncodeToString(script),
 	}, nil
 }
 
 // createRawTransaction handles createrawtransaction commands.
 func (s *Server) createRawTransaction(ctx context.Context, icmd interface{}) (interface{}, error) {
-	cmd := icmd.(*dcrdtypes.CreateRawTransactionCmd)
+	cmd := icmd.(*types.CreateRawTransactionCmd)
 
 	// Validate expiry, if given.
 	if cmd.Expiry != nil && *cmd.Expiry < 0 {
@@ -671,7 +690,7 @@ func (s *Server) createRawTransaction(ctx context.Context, icmd interface{}) (in
 	for encodedAddr, amount := range cmd.Amounts {
 		// Decode the provided address.  This also ensures the network encoded
 		// with the address matches the network the server is currently on.
-		addr, err := dcrutil.DecodeAddress(encodedAddr, s.activeNet)
+		addr, err := stdaddr.DecodeAddress(encodedAddr, s.activeNet)
 		if err != nil {
 			return nil, rpcErrorf(dcrjson.ErrRPCInvalidAddressOrKey,
 				"Address %q: %v", encodedAddr, err)
@@ -679,19 +698,15 @@ func (s *Server) createRawTransaction(ctx context.Context, icmd interface{}) (in
 
 		// Ensure the address is one of the supported types.
 		switch addr.(type) {
-		case *dcrutil.AddressPubKeyHash:
-		case *dcrutil.AddressScriptHash:
+		case *stdaddr.AddressPubKeyHashEcdsaSecp256k1V0:
+		case *stdaddr.AddressScriptHashV0:
 		default:
 			return nil, rpcErrorf(dcrjson.ErrRPCInvalidAddressOrKey,
 				"Invalid type: %T", addr)
 		}
 
 		// Create a new script which pays to the provided address.
-		pkScript, err := txscript.PayToAddrScript(addr)
-		if err != nil {
-			return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code,
-				"Pay to address script: %v", err)
-		}
+		vers, pkScript := addr.PaymentScript()
 
 		atomic, err := dcrutil.NewAmount(amount)
 		if err != nil {
@@ -704,7 +719,11 @@ func (s *Server) createRawTransaction(ctx context.Context, icmd interface{}) (in
 				"Amount outside valid range: %v", atomic)
 		}
 
-		txOut := wire.NewTxOut(int64(atomic), pkScript)
+		txOut := &wire.TxOut{
+			Value:    int64(atomic),
+			Version:  vers,
+			PkScript: pkScript,
+		}
 		mtx.AddTxOut(txOut)
 	}
 
@@ -774,6 +793,15 @@ func (s *Server) createSignature(ctx context.Context, icmd interface{}) (interfa
 		Signature: hex.EncodeToString(sig),
 		PublicKey: hex.EncodeToString(pubkey),
 	}, nil
+}
+
+// disapprovePercent returns the wallets current disapprove percentage.
+func (s *Server) disapprovePercent(ctx context.Context, _ interface{}) (interface{}, error) {
+	w, ok := s.walletLoader.LoadedWallet()
+	if !ok {
+		return nil, errUnloadedWallet
+	}
+	return w.DisapprovePercent(), nil
 }
 
 func (s *Server) discoverUsage(ctx context.Context, icmd interface{}) (interface{}, error) {
@@ -888,7 +916,7 @@ func (s *Server) fundRawTransaction(ctx context.Context, icmd interface{}) (inte
 	var changeSource txauthor.ChangeSource
 	if changeAddress != "" {
 		var err error
-		changeSource, err = makeScriptChangeSource(changeAddress, 0, w.ChainParams())
+		changeSource, err = makeScriptChangeSource(changeAddress, w.ChainParams())
 		if err != nil {
 			return nil, err
 		}
@@ -1026,7 +1054,8 @@ func (s *Server) getAddressesByAccount(ctx context.Context, icmd interface{}) (i
 				return err
 			}
 			pkh := dcrutil.Hash160(child.SerializedPubKey())
-			addr, _ := dcrutil.NewAddressPubKeyHash(pkh, params, dcrec.STEcdsaSecp256k1)
+			addr, _ := stdaddr.NewAddressPubKeyHashEcdsaSecp256k1V0(
+				pkh, params)
 			addrs = append(addrs, addr.String())
 		}
 		return nil
@@ -1201,7 +1230,7 @@ func (s *Server) getBlockCount(ctx context.Context, icmd interface{}) (interface
 // getBlockHash handles a getblockhash request by returning the main chain hash
 // for a block at some height.
 func (s *Server) getBlockHash(ctx context.Context, icmd interface{}) (interface{}, error) {
-	cmd := icmd.(*dcrdtypes.GetBlockHashCmd)
+	cmd := icmd.(*types.GetBlockHashCmd)
 	w, ok := s.walletLoader.LoadedWallet()
 	if !ok {
 		return nil, errUnloadedWallet
@@ -1216,13 +1245,493 @@ func (s *Server) getBlockHash(ctx context.Context, icmd interface{}) (interface{
 	return info.Hash.String(), nil
 }
 
+// getBlockHeader implements the getblockheader command.
+func (s *Server) getBlockHeader(ctx context.Context, icmd interface{}) (interface{}, error) {
+	cmd := icmd.(*types.GetBlockHeaderCmd)
+	w, ok := s.walletLoader.LoadedWallet()
+	if !ok {
+		return nil, errUnloadedWallet
+	}
+
+	// Attempt RPC passthrough if connected to DCRD.
+	n, err := w.NetworkBackend()
+	if err != nil {
+		return nil, err
+	}
+	if rpc, ok := n.(*dcrd.RPC); ok {
+		var resp json.RawMessage
+		err := rpc.Call(ctx, "getblockheader", &resp, cmd.Hash, cmd.Verbose)
+		return resp, err
+	}
+
+	blockHash, err := chainhash.NewHashFromStr(cmd.Hash)
+	if err != nil {
+		return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+	}
+
+	blockHeader, err := w.BlockHeader(ctx, blockHash)
+	if err != nil {
+		return nil, err
+	}
+
+	// When the verbose flag isn't set, simply return the serialized block
+	// header as a hex-encoded string.
+	if cmd.Verbose == nil || !*cmd.Verbose {
+		var headerBuf bytes.Buffer
+		err := blockHeader.Serialize(&headerBuf)
+		if err != nil {
+			return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code, "Could not serialize block header: %v", err)
+		}
+		return hex.EncodeToString(headerBuf.Bytes()), nil
+	}
+
+	// The verbose flag is set, so generate the JSON object and return it.
+
+	// Get next block hash unless there are none.
+	var nextHashString string
+	confirmations := int64(-1)
+	mainChainHasBlock, _, err := w.BlockInMainChain(ctx, blockHash)
+	if err != nil {
+		return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code, "Error checking if block is in mainchain: %v", err)
+	}
+	if mainChainHasBlock {
+		blockHeight := int32(blockHeader.Height)
+		_, bestHeight := w.MainChainTip(ctx)
+		if blockHeight < bestHeight {
+			nextBlockID := wallet.NewBlockIdentifierFromHeight(blockHeight + 1)
+			nextBlockInfo, err := w.BlockInfo(ctx, nextBlockID)
+			if err != nil {
+				return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code, "Info not found for next block: %v", err)
+			}
+			nextHashString = nextBlockInfo.Hash.String()
+		}
+		confirmations = int64(confirms(blockHeight, bestHeight))
+	}
+
+	// Calculate past median time. Look at the last 11 blocks, starting
+	// with the requested block, which is consistent with dcrd.
+	iBlkHeader := blockHeader // start with the block header for the requested block
+	timestamps := make([]int64, 0, 11)
+	for i := 0; i < cap(timestamps); i++ {
+		timestamps = append(timestamps, iBlkHeader.Timestamp.Unix())
+		if iBlkHeader.Height == 0 {
+			break
+		}
+		iBlkHeader, err = w.BlockHeader(ctx, &iBlkHeader.PrevBlock)
+		if err != nil {
+			return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code, "Info not found for previous block: %v", err)
+		}
+	}
+	sort.Slice(timestamps, func(i, j int) bool {
+		return timestamps[i] < timestamps[j]
+	})
+	medianTime := timestamps[len(timestamps)/2]
+
+	return &dcrdtypes.GetBlockHeaderVerboseResult{
+		Hash:          blockHash.String(),
+		Confirmations: confirmations,
+		Version:       blockHeader.Version,
+		MerkleRoot:    blockHeader.MerkleRoot.String(),
+		StakeRoot:     blockHeader.StakeRoot.String(),
+		VoteBits:      blockHeader.VoteBits,
+		FinalState:    hex.EncodeToString(blockHeader.FinalState[:]),
+		Voters:        blockHeader.Voters,
+		FreshStake:    blockHeader.FreshStake,
+		Revocations:   blockHeader.Revocations,
+		PoolSize:      blockHeader.PoolSize,
+		Bits:          strconv.FormatInt(int64(blockHeader.Bits), 16),
+		SBits:         dcrutil.Amount(blockHeader.SBits).ToCoin(),
+		Height:        blockHeader.Height,
+		Size:          blockHeader.Size,
+		Time:          blockHeader.Timestamp.Unix(),
+		MedianTime:    medianTime,
+		Nonce:         blockHeader.Nonce,
+		ExtraData:     hex.EncodeToString(blockHeader.ExtraData[:]),
+		StakeVersion:  blockHeader.StakeVersion,
+		Difficulty:    difficultyRatio(blockHeader.Bits, w.ChainParams()),
+		ChainWork:     "", // unset because wallet is not equipped to easily calculate the cummulative chainwork
+		PreviousHash:  blockHeader.PrevBlock.String(),
+		NextHash:      nextHashString,
+	}, nil
+}
+
+// getBlock implements the getblock command.
+func (s *Server) getBlock(ctx context.Context, icmd interface{}) (interface{}, error) {
+	cmd := icmd.(*types.GetBlockCmd)
+	w, ok := s.walletLoader.LoadedWallet()
+	if !ok {
+		return nil, errUnloadedWallet
+	}
+	n, err := w.NetworkBackend()
+	if err != nil {
+		return nil, err
+	}
+
+	// Attempt RPC passthrough if connected to DCRD.
+	if rpc, ok := n.(*dcrd.RPC); ok {
+		var resp json.RawMessage
+		err := rpc.Call(ctx, "getblock", &resp, cmd.Hash, cmd.Verbose, cmd.VerboseTx)
+		return resp, err
+	}
+
+	blockHash, err := chainhash.NewHashFromStr(cmd.Hash)
+	if err != nil {
+		return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+	}
+
+	blocks, err := n.Blocks(ctx, []*chainhash.Hash{blockHash})
+	if err != nil {
+		return nil, err
+	}
+	if len(blocks) == 0 {
+		// Should never happen but protects against a possible panic on
+		// the following code.
+		return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code, "Network returned 0 blocks")
+	}
+
+	blk := blocks[0]
+
+	// When the verbose flag isn't set, simply return the
+	// network-serialized block as a hex-encoded string.
+	if cmd.Verbose == nil || !*cmd.Verbose {
+		b := new(strings.Builder)
+		b.Grow(2 * blk.SerializeSize())
+		err = blk.Serialize(hex.NewEncoder(b))
+		if err != nil {
+			return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code, "Could not serialize block: %v", err)
+		}
+		return b.String(), nil
+	}
+
+	// Get next block hash unless there are none.
+	var nextHashString string
+	blockHeader := &blk.Header
+	confirmations := int64(-1)
+	mainChainHasBlock, _, err := w.BlockInMainChain(ctx, blockHash)
+	if err != nil {
+		return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code, "Error checking if block is in mainchain: %v", err)
+	}
+	if mainChainHasBlock {
+		blockHeight := int32(blockHeader.Height)
+		_, bestHeight := w.MainChainTip(ctx)
+		if blockHeight < bestHeight {
+			nextBlockID := wallet.NewBlockIdentifierFromHeight(blockHeight + 1)
+			nextBlockInfo, err := w.BlockInfo(ctx, nextBlockID)
+			if err != nil {
+				return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code, "Info not found for next block: %v", err)
+			}
+			nextHashString = nextBlockInfo.Hash.String()
+		}
+		confirmations = int64(confirms(blockHeight, bestHeight))
+	}
+
+	// Calculate past median time. Look at the last 11 blocks, starting
+	// with the requested block, which is consistent with dcrd.
+	timestamps := make([]int64, 0, 11)
+	for iBlkHeader := blockHeader; ; {
+		timestamps = append(timestamps, iBlkHeader.Timestamp.Unix())
+		if iBlkHeader.Height == 0 || len(timestamps) == cap(timestamps) {
+			break
+		}
+		iBlkHeader, err = w.BlockHeader(ctx, &iBlkHeader.PrevBlock)
+		if err != nil {
+			return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code, "Info not found for previous block: %v", err)
+		}
+	}
+	sort.Slice(timestamps, func(i, j int) bool {
+		return timestamps[i] < timestamps[j]
+	})
+	medianTime := timestamps[len(timestamps)/2]
+
+	sbitsFloat := float64(blockHeader.SBits) / dcrutil.AtomsPerCoin
+	blockReply := dcrdtypes.GetBlockVerboseResult{
+		Hash:          cmd.Hash,
+		Version:       blockHeader.Version,
+		MerkleRoot:    blockHeader.MerkleRoot.String(),
+		StakeRoot:     blockHeader.StakeRoot.String(),
+		PreviousHash:  blockHeader.PrevBlock.String(),
+		MedianTime:    medianTime,
+		Nonce:         blockHeader.Nonce,
+		VoteBits:      blockHeader.VoteBits,
+		FinalState:    hex.EncodeToString(blockHeader.FinalState[:]),
+		Voters:        blockHeader.Voters,
+		FreshStake:    blockHeader.FreshStake,
+		Revocations:   blockHeader.Revocations,
+		PoolSize:      blockHeader.PoolSize,
+		Time:          blockHeader.Timestamp.Unix(),
+		StakeVersion:  blockHeader.StakeVersion,
+		Confirmations: confirmations,
+		Height:        int64(blockHeader.Height),
+		Size:          int32(blk.Header.Size),
+		Bits:          strconv.FormatInt(int64(blockHeader.Bits), 16),
+		SBits:         sbitsFloat,
+		Difficulty:    difficultyRatio(blockHeader.Bits, w.ChainParams()),
+		ChainWork:     "", // unset because wallet is not equipped to easily calculate the cummulative chainwork
+		ExtraData:     hex.EncodeToString(blockHeader.ExtraData[:]),
+		NextHash:      nextHashString,
+	}
+
+	// The coinbase must be version 3 once the treasury agenda is active.
+	isTreasuryEnabled := blk.Transactions[0].Version >= wire.TxVersionTreasury
+
+	if cmd.VerboseTx == nil || !*cmd.VerboseTx {
+		transactions := blk.Transactions
+		txNames := make([]string, len(transactions))
+		for i, tx := range transactions {
+			txNames[i] = tx.TxHash().String()
+		}
+		blockReply.Tx = txNames
+
+		stransactions := blk.STransactions
+		stxNames := make([]string, len(stransactions))
+		for i, tx := range stransactions {
+			stxNames[i] = tx.TxHash().String()
+		}
+		blockReply.STx = stxNames
+	} else {
+		txns := blk.Transactions
+		rawTxns := make([]dcrdtypes.TxRawResult, len(txns))
+		for i, tx := range txns {
+			rawTxn, err := createTxRawResult(w.ChainParams(), tx, uint32(i), blockHeader, confirmations, isTreasuryEnabled)
+			if err != nil {
+				return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code, "Could not create transaction: %v", err)
+			}
+			rawTxns[i] = *rawTxn
+		}
+		blockReply.RawTx = rawTxns
+
+		stxns := blk.STransactions
+		rawSTxns := make([]dcrdtypes.TxRawResult, len(stxns))
+		for i, tx := range stxns {
+			rawSTxn, err := createTxRawResult(w.ChainParams(), tx, uint32(i), blockHeader, confirmations, isTreasuryEnabled)
+			if err != nil {
+				return nil, rpcErrorf(dcrjson.ErrRPCInternal.Code, "Could not create stake transaction: %v", err)
+			}
+			rawSTxns[i] = *rawSTxn
+		}
+		blockReply.RawSTx = rawSTxns
+	}
+
+	return blockReply, nil
+}
+
+func createTxRawResult(chainParams *chaincfg.Params, mtx *wire.MsgTx, blkIdx uint32, blkHeader *wire.BlockHeader,
+	confirmations int64, isTreasuryEnabled bool) (*dcrdtypes.TxRawResult, error) {
+
+	b := new(strings.Builder)
+	b.Grow(2 * mtx.SerializeSize())
+	err := mtx.Serialize(hex.NewEncoder(b))
+	if err != nil {
+		return nil, err
+	}
+
+	txReply := &dcrdtypes.TxRawResult{
+		Hex:           b.String(),
+		Txid:          mtx.CachedTxHash().String(),
+		Version:       int32(mtx.Version),
+		LockTime:      mtx.LockTime,
+		Expiry:        mtx.Expiry,
+		Vin:           createVinList(mtx, isTreasuryEnabled),
+		Vout:          createVoutList(mtx, chainParams, nil, isTreasuryEnabled),
+		BlockHash:     blkHeader.BlockHash().String(),
+		BlockHeight:   int64(blkHeader.Height),
+		BlockIndex:    blkIdx,
+		Confirmations: confirmations,
+		Time:          blkHeader.Timestamp.Unix(),
+		Blocktime:     blkHeader.Timestamp.Unix(), // identical to Time in bitcoind too
+	}
+
+	return txReply, nil
+}
+
+// createVinList returns a slice of JSON objects for the inputs of the passed
+// transaction.
+func createVinList(mtx *wire.MsgTx, isTreasuryEnabled bool) []dcrdtypes.Vin {
+	// Treasurybase transactions only have a single txin by definition.
+	//
+	// NOTE: This check MUST come before the coinbase check because a
+	// treasurybase will be identified as a coinbase as well.
+	vinList := make([]dcrdtypes.Vin, len(mtx.TxIn))
+	if isTreasuryEnabled && blockchain.IsTreasuryBase(mtx) {
+		txIn := mtx.TxIn[0]
+		vinEntry := &vinList[0]
+		vinEntry.Treasurybase = true
+		vinEntry.Sequence = txIn.Sequence
+		vinEntry.AmountIn = dcrutil.Amount(txIn.ValueIn).ToCoin()
+		vinEntry.BlockHeight = txIn.BlockHeight
+		vinEntry.BlockIndex = txIn.BlockIndex
+		return vinList
+	}
+
+	// Coinbase transactions only have a single txin by definition.
+	if blockchain.IsCoinBaseTx(mtx, isTreasuryEnabled) {
+		txIn := mtx.TxIn[0]
+		vinEntry := &vinList[0]
+		vinEntry.Coinbase = hex.EncodeToString(txIn.SignatureScript)
+		vinEntry.Sequence = txIn.Sequence
+		vinEntry.AmountIn = dcrutil.Amount(txIn.ValueIn).ToCoin()
+		vinEntry.BlockHeight = txIn.BlockHeight
+		vinEntry.BlockIndex = txIn.BlockIndex
+		return vinList
+	}
+
+	// Treasury spend transactions only have a single txin by definition.
+	if isTreasuryEnabled && stake.IsTSpend(mtx) {
+		txIn := mtx.TxIn[0]
+		vinEntry := &vinList[0]
+		vinEntry.TreasurySpend = hex.EncodeToString(txIn.SignatureScript)
+		vinEntry.Sequence = txIn.Sequence
+		vinEntry.AmountIn = dcrutil.Amount(txIn.ValueIn).ToCoin()
+		vinEntry.BlockHeight = txIn.BlockHeight
+		vinEntry.BlockIndex = txIn.BlockIndex
+		return vinList
+	}
+
+	// Stakebase transactions (votes) have two inputs: a null stake base
+	// followed by an input consuming a ticket's stakesubmission.
+	isSSGen := stake.IsSSGen(mtx, isTreasuryEnabled)
+
+	for i, txIn := range mtx.TxIn {
+		// Handle only the null input of a stakebase differently.
+		if isSSGen && i == 0 {
+			vinEntry := &vinList[0]
+			vinEntry.Stakebase = hex.EncodeToString(txIn.SignatureScript)
+			vinEntry.Sequence = txIn.Sequence
+			vinEntry.AmountIn = dcrutil.Amount(txIn.ValueIn).ToCoin()
+			vinEntry.BlockHeight = txIn.BlockHeight
+			vinEntry.BlockIndex = txIn.BlockIndex
+			continue
+		}
+
+		// The disassembled string will contain [error] inline
+		// if the script doesn't fully parse, so ignore the
+		// error here.
+		disbuf, _ := txscript.DisasmString(txIn.SignatureScript)
+
+		vinEntry := &vinList[i]
+		vinEntry.Txid = txIn.PreviousOutPoint.Hash.String()
+		vinEntry.Vout = txIn.PreviousOutPoint.Index
+		vinEntry.Tree = txIn.PreviousOutPoint.Tree
+		vinEntry.Sequence = txIn.Sequence
+		vinEntry.AmountIn = dcrutil.Amount(txIn.ValueIn).ToCoin()
+		vinEntry.BlockHeight = txIn.BlockHeight
+		vinEntry.BlockIndex = txIn.BlockIndex
+		vinEntry.ScriptSig = &dcrdtypes.ScriptSig{
+			Asm: disbuf,
+			Hex: hex.EncodeToString(txIn.SignatureScript),
+		}
+	}
+
+	return vinList
+}
+
+// createVoutList returns a slice of JSON objects for the outputs of the passed
+// transaction.
+func createVoutList(mtx *wire.MsgTx, chainParams *chaincfg.Params, filterAddrMap map[string]struct{}, isTreasuryEnabled bool) []dcrdtypes.Vout {
+	txType := stake.DetermineTxType(mtx, isTreasuryEnabled, false)
+	voutList := make([]dcrdtypes.Vout, 0, len(mtx.TxOut))
+	for i, v := range mtx.TxOut {
+		// The disassembled string will contain [error] inline if the
+		// script doesn't fully parse, so ignore the error here.
+		disbuf, _ := txscript.DisasmString(v.PkScript)
+
+		// Attempt to extract addresses from the public key script.  In
+		// the case of stake submission transactions, the odd outputs
+		// contain a commitment address, so detect that case
+		// accordingly.
+		var addrs []stdaddr.Address
+		var scriptClass string
+		var reqSigs uint16
+		var commitAmt *dcrutil.Amount
+		if txType == stake.TxTypeSStx && (i%2 != 0) {
+			scriptClass = sstxCommitmentString
+			addr, err := stake.AddrFromSStxPkScrCommitment(v.PkScript,
+				chainParams)
+			if err != nil {
+				log.Warnf("failed to decode ticket "+
+					"commitment addr output for tx hash "+
+					"%v, output idx %v", mtx.TxHash(), i)
+			} else {
+				addrs = []stdaddr.Address{addr}
+			}
+			amt, err := stake.AmountFromSStxPkScrCommitment(v.PkScript)
+			if err != nil {
+				log.Warnf("failed to decode ticket "+
+					"commitment amt output for tx hash %v"+
+					", output idx %v", mtx.TxHash(), i)
+			} else {
+				commitAmt = &amt
+			}
+		} else {
+			// Ignore the error here since an error means the script
+			// couldn't parse and there is no additional information
+			// about it anyways.
+			var sc stdscript.ScriptType
+			sc, addrs = stdscript.ExtractAddrs(v.Version, v.PkScript, chainParams)
+			reqSigs = stdscript.DetermineRequiredSigs(v.Version, v.PkScript)
+			scriptClass = sc.String()
+		}
+
+		// Encode the addresses while checking if the address passes the
+		// filter when needed.
+		passesFilter := len(filterAddrMap) == 0
+		encodedAddrs := make([]string, len(addrs))
+		for j, addr := range addrs {
+			encodedAddr := addr.String()
+			encodedAddrs[j] = encodedAddr
+
+			// No need to check the map again if the filter already
+			// passes.
+			if passesFilter {
+				continue
+			}
+			if _, exists := filterAddrMap[encodedAddr]; exists {
+				passesFilter = true
+			}
+		}
+
+		if !passesFilter {
+			continue
+		}
+
+		var vout dcrdtypes.Vout
+		voutSPK := &vout.ScriptPubKey
+		vout.N = uint32(i)
+		vout.Value = dcrutil.Amount(v.Value).ToCoin()
+		vout.Version = v.Version
+		voutSPK.Addresses = encodedAddrs
+		voutSPK.Asm = disbuf
+		voutSPK.Hex = hex.EncodeToString(v.PkScript)
+		voutSPK.Type = scriptClass
+		voutSPK.ReqSigs = int32(reqSigs)
+		if commitAmt != nil {
+			voutSPK.CommitAmt = dcrjson.Float64(commitAmt.ToCoin())
+		}
+
+		voutList = append(voutList, vout)
+	}
+
+	return voutList
+}
+
 // difficultyRatio returns the proof-of-work difficulty as a multiple of the
 // minimum difficulty using the passed bits field from the header of a block.
 func difficultyRatio(bits uint32, params *chaincfg.Params) float64 {
+	// The minimum difficulty is the max possible proof-of-work limit bits
+	// converted back to a number.  Note this is not the same as the proof
+	// of work limit directly because the block difficulty is encoded in a
+	// block with the compact form which loses precision.
 	max := blockchain.CompactToBig(params.PowLimitBits)
 	target := blockchain.CompactToBig(bits)
-	ratio, _ := new(big.Rat).SetFrac(max, target).Float64()
-	return ratio
+
+	difficulty := new(big.Rat).SetFrac(max, target)
+	outString := difficulty.FloatString(8)
+	diff, err := strconv.ParseFloat(outString, 64)
+	if err != nil {
+		log.Errorf("Cannot get difficulty: %v", err)
+		return 0
+	}
+	return diff
 }
 
 // syncStatus handles a syncstatus request.
@@ -1274,6 +1783,11 @@ func (s *Server) syncStatus(ctx context.Context, icmd interface{}) (interface{},
 		InitialBlockDownload: walletBestBlockTooOld,
 		HeadersFetchProgress: headersFetchProgress,
 	}, nil
+}
+
+// getCurrentNet handles a getcurrentnet request.
+func (s *Server) getCurrentNet(ctx context.Context, icmd interface{}) (interface{}, error) {
+	return s.activeNet.Net, nil
 }
 
 // getInfo handles a getinfo request by returning a structure containing
@@ -1337,15 +1851,15 @@ func (s *Server) getInfo(ctx context.Context, icmd interface{}) (interface{}, er
 	return info, nil
 }
 
-func decodeAddress(s string, params *chaincfg.Params) (dcrutil.Address, error) {
+func decodeAddress(s string, params *chaincfg.Params) (stdaddr.Address, error) {
 	// Secp256k1 pubkey as a string, handle differently.
 	if len(s) == 66 || len(s) == 130 {
 		pubKeyBytes, err := hex.DecodeString(s)
 		if err != nil {
 			return nil, err
 		}
-		pubKeyAddr, err := dcrutil.NewAddressSecpPubKey(pubKeyBytes,
-			params)
+		pubKeyAddr, err := stdaddr.NewAddressPubKeyEcdsaSecp256k1V0Raw(
+			pubKeyBytes, params)
 		if err != nil {
 			return nil, err
 		}
@@ -1353,12 +1867,24 @@ func decodeAddress(s string, params *chaincfg.Params) (dcrutil.Address, error) {
 		return pubKeyAddr, nil
 	}
 
-	addr, err := dcrutil.DecodeAddress(s, params)
+	addr, err := stdaddr.DecodeAddress(s, params)
 	if err != nil {
 		return nil, rpcErrorf(dcrjson.ErrRPCInvalidAddressOrKey,
 			"invalid address %q: decode failed: %#q", s, err)
 	}
 	return addr, nil
+}
+
+func decodeStakeAddress(s string, params *chaincfg.Params) (stdaddr.StakeAddress, error) {
+	a, err := decodeAddress(s, params)
+	if err != nil {
+		return nil, err
+	}
+	if sa, ok := a.(stdaddr.StakeAddress); ok {
+		return sa, nil
+	}
+	return nil, rpcErrorf(dcrjson.ErrRPCInvalidAddressOrKey,
+		"invalid stake address %q", s)
 }
 
 // getAccount handles a getaccount request by returning the account name
@@ -1415,7 +1941,7 @@ func (s *Server) getAccountAddress(ctx context.Context, icmd interface{}) (inter
 		return nil, err
 	}
 
-	return addr.Address(), nil
+	return addr.String(), nil
 }
 
 // getUnconfirmedBalance handles a getunconfirmedbalance extension request
@@ -1448,6 +1974,31 @@ func (s *Server) getUnconfirmedBalance(ctx context.Context, icmd interface{}) (i
 	}
 
 	return (bals.Total - bals.Spendable).ToCoin(), nil
+}
+
+// getCFilterV2 implements the getcfilterv2 command.
+func (s *Server) getCFilterV2(ctx context.Context, icmd interface{}) (interface{}, error) {
+	cmd := icmd.(*types.GetCFilterV2Cmd)
+	blockHash, err := chainhash.NewHashFromStr(cmd.BlockHash)
+	if err != nil {
+		return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+	}
+
+	w, ok := s.walletLoader.LoadedWallet()
+	if !ok {
+		return nil, errUnloadedWallet
+	}
+
+	key, filter, err := w.CFilterV2(ctx, blockHash)
+	if err != nil {
+		return nil, err
+	}
+
+	return &types.GetCFilterV2Result{
+		BlockHash: cmd.BlockHash,
+		Filter:    hex.EncodeToString(filter.Bytes()),
+		Key:       hex.EncodeToString(key[:]),
+	}, nil
 }
 
 // importCFiltersV2 handles an importcfiltersv2 request by parsing the provided
@@ -1728,19 +2279,17 @@ func (s *Server) getMultisigOutInfo(ctx context.Context, icmd interface{}) (inte
 	}
 
 	// Get the list of pubkeys required to sign.
-	_, pubkeyAddrs, _, err := txscript.ExtractPkScriptAddrs(
-		0, p2shOutput.RedeemScript,
-		w.ChainParams(), true) // Yes treasury
-	if err != nil {
-		return nil, err
-	}
+	_, pubkeyAddrs := stdscript.ExtractAddrs(scriptVersionAssumed, p2shOutput.RedeemScript, w.ChainParams())
 	pubkeys := make([]string, 0, len(pubkeyAddrs))
 	for _, pka := range pubkeyAddrs {
-		pubkeys = append(pubkeys, hex.EncodeToString(pka.ScriptAddress()))
+		switch pka := pka.(type) {
+		case *stdaddr.AddressPubKeyEcdsaSecp256k1V0:
+			pubkeys = append(pubkeys, hex.EncodeToString(pka.SerializedPubKey()))
+		}
 	}
 
 	result := &types.GetMultisigOutInfoResult{
-		Address:      p2shOutput.P2SHAddress.Address(),
+		Address:      p2shOutput.P2SHAddress.String(),
 		RedeemScript: hex.EncodeToString(p2shOutput.RedeemScript),
 		M:            p2shOutput.M,
 		N:            p2shOutput.N,
@@ -1801,7 +2350,7 @@ func (s *Server) getNewAddress(ctx context.Context, icmd interface{}) (interface
 	if err != nil {
 		return nil, err
 	}
-	return addr.Address(), nil
+	return addr.String(), nil
 }
 
 // getRawChangeAddress handles a getrawchangeaddress request by creating
@@ -1834,7 +2383,7 @@ func (s *Server) getRawChangeAddress(ctx context.Context, icmd interface{}) (int
 	}
 
 	// Return the new payment address string.
-	return addr.Address(), nil
+	return addr.String(), nil
 }
 
 // getReceivedByAccount handles a getreceivedbyaccount request by returning
@@ -1947,7 +2496,7 @@ func (s *Server) getPeerInfo(ctx context.Context, icmd interface{}) (interface{}
 
 	syncer, ok := n.(*spv.Syncer)
 	if !ok {
-		var resp []*dcrdtypes.GetPeerInfoResult
+		var resp []*types.GetPeerInfoResult
 		if rpc, ok := n.(*dcrd.RPC); ok {
 			err := rpc.Call(ctx, "getpeerinfo", &resp)
 			if err != nil {
@@ -2157,6 +2706,86 @@ func (s *Server) getTransaction(ctx context.Context, icmd interface{}) (interfac
 	return ret, nil
 }
 
+// getTxOut handles a gettxout request by returning details about an unspent
+// output. In SPV mode, details are only returned for transaction outputs that
+// are relevant to the wallet.
+// To match the behavior in RPC mode, (nil, nil) is returned if the transaction
+// output could not be found (never existed or was pruned) or is spent by another
+// transaction already in the main chain.  Mined transactions that are spent by
+// a mempool transaction are not affected by this.
+func (s *Server) getTxOut(ctx context.Context, icmd interface{}) (interface{}, error) {
+	cmd := icmd.(*types.GetTxOutCmd)
+	w, ok := s.walletLoader.LoadedWallet()
+	if !ok {
+		return nil, errUnloadedWallet
+	}
+
+	// Attempt RPC passthrough if connected to DCRD.
+	n, err := w.NetworkBackend()
+	if err != nil {
+		return nil, err
+	}
+	if rpc, ok := n.(*dcrd.RPC); ok {
+		var resp json.RawMessage
+		err := rpc.Call(ctx, "gettxout", &resp, cmd.Txid, cmd.Vout, cmd.Tree, cmd.IncludeMempool)
+		return resp, err
+	}
+
+	txHash, err := chainhash.NewHashFromStr(cmd.Txid)
+	if err != nil {
+		return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+	}
+
+	if cmd.Tree != wire.TxTreeRegular && cmd.Tree != wire.TxTreeStake {
+		return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter, "Tx tree must be regular or stake")
+	}
+
+	// Attempt to read the unspent txout info from wallet.
+	outpoint := wire.OutPoint{Hash: *txHash, Index: cmd.Vout, Tree: cmd.Tree}
+	utxo, err := w.UnspentOutput(ctx, outpoint, *cmd.IncludeMempool)
+	if err != nil && !errors.Is(err, errors.NotExist) {
+		return nil, err
+	}
+	if utxo == nil {
+		return nil, nil // output is spent or does not exist.
+	}
+
+	// Disassemble script into single line printable format.  The
+	// disassembled string will contain [error] inline if the script
+	// doesn't fully parse, so ignore the error here.
+	disbuf, _ := txscript.DisasmString(utxo.PkScript)
+
+	// Get further info about the script.  Ignore the error here since an
+	// error means the script couldn't parse and there is no additional
+	// information about it anyways.
+	scriptClass, addrs := stdscript.ExtractAddrs(scriptVersionAssumed, utxo.PkScript, s.activeNet)
+	reqSigs := stdscript.DetermineRequiredSigs(scriptVersionAssumed, utxo.PkScript)
+	addresses := make([]string, len(addrs))
+	for i, addr := range addrs {
+		addresses[i] = addr.String()
+	}
+
+	bestHash, bestHeight := w.MainChainTip(ctx)
+	var confirmations int64
+	if utxo.Block.Height != -1 {
+		confirmations = int64(confirms(utxo.Block.Height, bestHeight))
+	}
+
+	return &dcrdtypes.GetTxOutResult{
+		BestBlock:     bestHash.String(),
+		Confirmations: confirmations,
+		Value:         utxo.Amount.ToCoin(),
+		ScriptPubKey: dcrdtypes.ScriptPubKeyResult{
+			Asm:       disbuf,
+			Hex:       hex.EncodeToString(utxo.PkScript),
+			ReqSigs:   int32(reqSigs),
+			Type:      scriptClass.String(),
+			Addresses: addresses,
+		},
+		Coinbase: utxo.FromCoinBase,
+	}, nil
+}
+
 // getVoteChoices handles a getvotechoices request by returning configured vote
 // preferences for each agenda of the latest supported stake version.
 func (s *Server) getVoteChoices(ctx context.Context, icmd interface{}) (interface{}, error) {
@@ -2240,7 +2869,7 @@ var helpDescsMu sync.Mutex // Help may execute concurrently, so synchronize acce
 // and this is simply a helper function for the HelpNoChainRPC and
 // HelpWithChainRPC handlers.
 func (s *Server) help(ctx context.Context, icmd interface{}) (interface{}, error) {
-	cmd := icmd.(*dcrdtypes.HelpCmd)
+	cmd := icmd.(*types.HelpCmd)
 	// TODO: The "help" RPC should use a HTTP POST client when calling down to
 	// dcrd for additional help methods.  This avoids including websocket-only
 	// requests in the help, which are not callable by wallet JSON-RPC clients.
@@ -2430,14 +3059,9 @@ func (s *Server) listReceivedByAddress(ctx context.Context, icmd interface{}) (i
 			for _, cred := range tx.Credits {
 				pkVersion := tx.MsgTx.TxOut[cred.Index].Version
 				pkScript := tx.MsgTx.TxOut[cred.Index].PkScript
-				_, addrs, _, err := txscript.ExtractPkScriptAddrs(pkVersion,
-					pkScript, w.ChainParams(), true) // Yes treasury
-				if err != nil {
-					// Non standard script, skip.
-					continue
-				}
+				_, addrs := stdscript.ExtractAddrs(pkVersion, pkScript, w.ChainParams())
 				for _, addr := range addrs {
-					addrStr := addr.Address()
+					addrStr := addr.String()
 					addrData, ok := allAddrData[addrStr]
 					if ok {
 						addrData.amount += cred.Amount
@@ -2578,7 +3202,13 @@ func (s *Server) listAddressTransactions(ctx context.Context, icmd interface{}) 
 		if err != nil {
 			return nil, err
 		}
-		hash160Map[string(addr.ScriptAddress())] = struct{}{}
+		hash160er, ok := addr.(stdaddr.Hash160er)
+		if !ok {
+			// Not tracked by the wallet so skip reporting history
+			// of this address.
+			continue
+		}
+		hash160Map[string(hash160er.Hash160()[:])] = struct{}{}
 	}
 
 	return w.ListAddressTransactions(ctx, hash160Map)
@@ -2620,7 +3250,7 @@ func (s *Server) listUnspent(ctx context.Context, icmd interface{}) (interface{}
 			if err != nil {
 				return nil, err
 			}
-			addresses[a.Address()] = struct{}{}
+			addresses[a.String()] = struct{}{}
 		}
 	}
 
@@ -2708,15 +3338,13 @@ func (s *Server) purchaseTicket(ctx context.Context, icmd interface{}) (interfac
 	}
 
 	// Set ticket address if specified.
-	var ticketAddr dcrutil.Address
-	if cmd.TicketAddress != nil {
-		if *cmd.TicketAddress != "" {
-			addr, err := decodeAddress(*cmd.TicketAddress, w.ChainParams())
-			if err != nil {
-				return nil, err
-			}
-			ticketAddr = addr
+	var ticketAddr stdaddr.StakeAddress
+	if cmd.TicketAddress != nil && *cmd.TicketAddress != "" {
+		addr, err := decodeStakeAddress(*cmd.TicketAddress, w.ChainParams())
+		if err != nil {
+			return nil, err
 		}
+		ticketAddr = addr
 	}
 
 	numTickets := 1
@@ -2727,25 +3355,25 @@ func (s *Server) purchaseTicket(ctx context.Context, icmd interface{}) (interfac
 	}
 
 	// Set pool address if specified.
-	var poolAddr dcrutil.Address
+	var poolAddr stdaddr.StakeAddress
 	var poolFee float64
-	if cmd.PoolAddress != nil {
-		if *cmd.PoolAddress != "" {
-			addr, err := decodeAddress(*cmd.PoolAddress, w.ChainParams())
-			if err != nil {
-				return nil, err
-			}
-			poolAddr = addr
+	if cmd.PoolAddress != nil && *cmd.PoolAddress != "" {
+		addr, err := decodeStakeAddress(*cmd.PoolAddress, w.ChainParams())
+		if err != nil {
+			return nil, err
+		}
+		poolAddr = addr
 
-			// Attempt to get the amount to send to
-			// the pool after.
-			if cmd.PoolFees == nil {
-				return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter, "pool address set without pool fee")
-			}
-			poolFee = *cmd.PoolFees
-			if !txrules.ValidPoolFeeRate(poolFee) {
-				return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter, "pool fee percentage %v", poolFee)
-			}
+		// Attempt to get the amount to send to
+		// the pool after.
+		if cmd.PoolFees == nil {
+			return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter,
+				"pool address set without pool fee")
+		}
+		poolFee = *cmd.PoolFees
+		if !txrules.ValidPoolFeeRate(poolFee) {
+			return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter,
+				"pool fee percentage %v", poolFee)
 		}
 	}
 
@@ -2760,6 +3388,68 @@ func (s *Server) purchaseTicket(ctx context.Context, icmd interface{}) (interfac
 		dontSignTx = *cmd.DontSignTx
 	}
 
+	var csppServer string
+	var mixedAccount uint32
+	var mixedAccountBranch uint32
+	var mixedSplitAccount uint32
+	var changeAccount = account
+
+	if s.cfg.CSPPServer != "" {
+		csppServer = s.cfg.CSPPServer
+		mixedAccount, err = w.AccountNumber(ctx, s.cfg.MixAccount)
+		if err != nil {
+			return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter,
+				"CSPP Server set, but error on mixed account: %v", err)
+		}
+		mixedAccountBranch = s.cfg.MixBranch
+		if mixedAccountBranch != 0 && mixedAccountBranch != 1 {
+			return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter,
+				"MixedAccountBranch should be 0 or 1.")
+		}
+		_, err = w.AccountNumber(ctx, s.cfg.TicketSplitAccount)
+		if err != nil {
+			return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter,
+				"CSPP Server set, but error on mixedSplitAccount: %v", err)
+		}
+		_, err = w.AccountNumber(ctx, s.cfg.MixChangeAccount)
+		if err != nil {
+			return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter,
+				"CSPP Server set, but error on changeAccount: %v", err)
+		}
+	}
+
+	var vspHost string
+	var vspPubKey string
+	var vspClient *vsp.Client
+	if s.cfg.VSPHost != "" || s.cfg.VSPPubKey != "" {
+		vspHost = s.cfg.VSPHost
+		vspPubKey = s.cfg.VSPPubKey
+		if vspPubKey == "" {
+			return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter,
+				"vsp pubkey can not be null")
+		}
+		if vspHost == "" {
+			return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter,
+				"vsp host can not be null")
+		}
+		cfg := vsp.Config{
+			URL:    vspHost,
+			PubKey: vspPubKey,
+			Dialer: s.cfg.Dial,
+			Wallet: w,
+			Policy: vsp.Policy{
+				MaxFee:     0.2e8,
+				FeeAcct:    account,
+				ChangeAcct: changeAccount,
+			},
+		}
+		vspClient, err = loader.VSP(cfg)
+		if err != nil {
+			return nil, rpcErrorf(dcrjson.ErrRPCMisc,
+				"VSP Server instance failed to start: %v", err)
+		}
+	}
+
 	request := &wallet.PurchaseTicketsRequest{
 		Count:         numTickets,
 		SourceAccount: account,
@@ -2769,7 +3459,21 @@ func (s *Server) purchaseTicket(ctx context.Context, icmd interface{}) (interfac
 		DontSignTx:    dontSignTx,
 		VSPAddress:    poolAddr,
 		VSPFees:       poolFee,
+
+		// CSPP
+		CSPPServer:         csppServer,
+		DialCSPPServer:     s.cfg.DialCSPPServer,
+		MixedAccount:       mixedAccount,
+		MixedAccountBranch: mixedAccountBranch,
+		MixedSplitAccount:  mixedSplitAccount,
+		ChangeAccount:      changeAccount,
 	}
+
+	if vspClient != nil {
+		request.VSPFeePaymentProcess = vspClient.Process
+		request.VSPFeeProcess = vspClient.FeePercentage
+	}
+
 	ticketsResponse, err := w.PurchaseTickets(ctx, n, request)
 	if err != nil {
 		return nil, err
@@ -2814,18 +3518,37 @@ func (s *Server) purchaseTicket(ctx context.Context, icmd interface{}) (interfac
 	}, nil
 }
 
-func addressScript(addr dcrutil.Address) (pkScript []byte, version uint16, err error) {
-	type scripter interface {
-		PaymentScript() (uint16, []byte)
+// processUnmanagedTicket takes a ticket hash as an argument and attempts to
+// start managing it for the set vsp client from the config.
+func (s *Server) processUnmanagedTicket(ctx context.Context, icmd interface{}) (interface{}, error) {
+	cmd := icmd.(*types.ProcessUnmanagedTicketCmd)
+
+	var ticketHash *chainhash.Hash
+	if cmd.TicketHash != nil {
+		hash, err := chainhash.NewHashFromStr(*cmd.TicketHash)
+		if err != nil {
+			return nil, rpcError(dcrjson.ErrRPCInvalidParameter, err)
+		}
+		ticketHash = hash
+	} else {
+		return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter, "ticket hash must be provided")
 	}
-	switch addr := addr.(type) {
-	case scripter:
-		version, script := addr.PaymentScript()
-		return script, version, nil
-	default:
-		pkScript, err = txscript.PayToAddrScript(addr)
-		return pkScript, 0, err
+	vspHost := s.cfg.VSPHost
+	if vspHost == "" {
+		return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter, "vsphost must be set in options")
 	}
+	vspClient, err := loader.LookupVSP(vspHost)
+	if err != nil {
+		return nil, err
+	}
+
+	err = vspClient.ProcessTicket(ctx, ticketHash)
+	if err != nil {
+		return nil, err
+	}
+
+	return nil, nil
+
 }
 
 // makeOutputs creates a slice of transaction outputs from a pair of address
@@ -2843,10 +3566,7 @@ func makeOutputs(pairs map[string]dcrutil.Amount, chainParams *chaincfg.Params) 
 			return nil, err
 		}
 
-		pkScript, vers, err := addressScript(addr)
-		if err != nil {
-			return nil, err
-		}
+		vers, pkScript := addr.PaymentScript()
 
 		outputs = append(outputs, &wire.TxOut{
 			Value:    int64(amt),
@@ -2910,7 +3630,7 @@ func (s *Server) sendPairsWithMemo(ctx context.Context, w *wallet.Wallet, amount
 // sendPairs creates and sends payment transactions.
 // It returns the transaction hash in string format upon success
 // All errors are returned in dcrjson.RPCError format
-func (s *Server) sendPairs(ctx context.Context, w *wallet.Wallet, amounts map[string]dcrutil.Amount,  account uint32, minconf int32) (string, error) {
+func (s *Server) sendPairs(ctx context.Context, w *wallet.Wallet, amounts map[string]dcrutil.Amount, account uint32, minconf int32) (string, error) {
 	changeAccount := account
 	if s.cfg.CSPPServer != "" && s.cfg.MixAccount != "" && s.cfg.MixChangeAccount != "" {
 		mixAccount, err := w.AccountNumber(ctx, s.cfg.MixAccount)
@@ -3039,24 +3759,20 @@ func (s *Server) sendOutputsFromTreasury(ctx context.Context, w *wallet.Wallet, 
 		totalPayout += amt
 
 		// Decode address.
-		addr, err := decodeAddress(address, w.ChainParams())
+		addr, err := decodeStakeAddress(address, w.ChainParams())
 		if err != nil {
 			return "", err
 		}
 
 		// Create OP_TGEN prefixed script.
-		p2ahs, err := txscript.PayToAddrScript(addr)
-		if err != nil {
-			return "", rpcErrorf(dcrjson.ErrRPCInternal.Code,
-				"sendOutputsFromTreasury PayToAddrScript: %v",
-				err)
-		}
-		script := make([]byte, len(p2ahs)+1)
-		script[0] = txscript.OP_TGEN
-		copy(script[1:], p2ahs)
+		vers, script := addr.PayFromTreasuryScript()
 
 		// Make sure this is not dust.
-		txOut := wire.NewTxOut(int64(amt), script)
+		txOut := &wire.TxOut{
+			Value:    int64(amt),
+			Version:  vers,
+			PkScript: script,
+		}
 		if txrules.IsDustOutput(txOut, w.RelayFee()) {
 			return "", rpcErrorf(dcrjson.ErrRPCInvalidParameter,
 				"Amount is dust: %v %v", addr, amt)
@@ -3090,7 +3806,7 @@ func (s *Server) sendOutputsFromTreasury(ctx context.Context, w *wallet.Wallet, 
 
 	// Calculate TSpend signature without SigHashType.
 	privKeyBytes := privKey.Serialize()
-	sigscript, err := txscript.TSpendSignatureScript(msgTx, privKeyBytes)
+	sigscript, err := sign.TSpendSignatureScript(msgTx, privKeyBytes)
 	if err != nil {
 		return "", err
 	}
@@ -3116,12 +3832,22 @@ func (s *Server) sendOutputsFromTreasury(ctx context.Context, w *wallet.Wallet, 
 
 // treasuryPolicy returns voting policies for treasury spends by a particular
 // key.  If a key is specified, that policy is returned; otherwise the policies
-// for all keys are returned in an array.
+// for all keys are returned in an array.  If both a key and ticket hash are
+// provided, the per-ticket key policy is returned.
 func (s *Server) treasuryPolicy(ctx context.Context, icmd interface{}) (interface{}, error) {
 	cmd := icmd.(*types.TreasuryPolicyCmd)
 	w, ok := s.walletLoader.LoadedWallet()
 	if !ok {
 		return nil, errUnloadedWallet
+	}
+
+	var ticketHash *chainhash.Hash
+	if cmd.Ticket != nil && *cmd.Ticket != "" {
+		var err error
+		ticketHash, err = chainhash.NewHashFromStr(*cmd.Ticket)
+		if err != nil {
+			return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+		}
 	}
 
 	if cmd.Key != nil && *cmd.Key != "" {
@@ -3130,7 +3856,7 @@ func (s *Server) treasuryPolicy(ctx context.Context, icmd interface{}) (interfac
 			return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
 		}
 		var policy string
-		switch w.TreasuryKeyPolicy(pikey) {
+		switch w.TreasuryKeyPolicy(pikey, ticketHash) {
 		case stake.TreasuryVoteYes:
 			policy = "yes"
 		case stake.TreasuryVoteNo:
@@ -3141,6 +3867,9 @@ func (s *Server) treasuryPolicy(ctx context.Context, icmd interface{}) (interfac
 		res := &types.TreasuryPolicyResult{
 			Key:    *cmd.Key,
 			Policy: policy,
+		}
+		if cmd.Ticket != nil {
+			res.Ticket = *cmd.Ticket
 		}
 		return res, nil
 	}
@@ -3155,21 +3884,60 @@ func (s *Server) treasuryPolicy(ctx context.Context, icmd interface{}) (interfac
 		case stake.TreasuryVoteNo:
 			policy = "no"
 		}
-		res = append(res, types.TreasuryPolicyResult{
+		r := types.TreasuryPolicyResult{
 			Key:    hex.EncodeToString(policies[i].PiKey),
 			Policy: policy,
-		})
+		}
+		if policies[i].Ticket != nil {
+			r.Ticket = policies[i].Ticket.String()
+		}
+		res = append(res, r)
 	}
 	return res, nil
 }
 
+// setDisapprovePercent sets the wallet's disapprove percentage.
+func (s *Server) setDisapprovePercent(ctx context.Context, icmd interface{}) (interface{}, error) {
+	if s.activeNet.Net == wire.MainNet {
+		return nil, dcrjson.ErrInvalidRequest
+	}
+	cmd := icmd.(*types.SetDisapprovePercentCmd)
+	if cmd.Percent > 100 {
+		return nil, rpcError(dcrjson.ErrRPCInvalidParameter,
+			errors.New("percent must be from 0 to 100"))
+	}
+	w, ok := s.walletLoader.LoadedWallet()
+	if !ok {
+		return nil, errUnloadedWallet
+	}
+	w.SetDisapprovePercent(cmd.Percent)
+	return nil, nil
+}
+
 // setTreasuryPolicy saves the voting policy for treasury spends by a particular
-// key.
+// key, and optionally, setting the key policy used by a specific ticket.
+//
+// If a VSP host is configured in the application settings, the voting
+// preferences will also be set with the VSP.
 func (s *Server) setTreasuryPolicy(ctx context.Context, icmd interface{}) (interface{}, error) {
 	cmd := icmd.(*types.SetTreasuryPolicyCmd)
 	w, ok := s.walletLoader.LoadedWallet()
 	if !ok {
 		return nil, errUnloadedWallet
+	}
+
+	var ticketHash *chainhash.Hash
+	if cmd.Ticket != nil && *cmd.Ticket != "" {
+		if len(*cmd.Ticket) != chainhash.MaxHashStringSize {
+			err := fmt.Errorf("invalid ticket hash length, expected %d got %d",
+				chainhash.MaxHashStringSize, len(*cmd.Ticket))
+			return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+		}
+		var err error
+		ticketHash, err = chainhash.NewHashFromStr(*cmd.Ticket)
+		if err != nil {
+			return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+		}
 	}
 
 	pikey, err := hex.DecodeString(cmd.Key)
@@ -3193,19 +3961,39 @@ func (s *Server) setTreasuryPolicy(ctx context.Context, icmd interface{}) (inter
 		return nil, rpcError(dcrjson.ErrRPCInvalidParameter, err)
 	}
 
-	err = w.SetTreasuryKeyPolicy(ctx, pikey, policy)
+	err = w.SetTreasuryKeyPolicy(ctx, pikey, policy, ticketHash)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update voting preferences on VSPs if required.
+	policyMap := map[string]string{
+		cmd.Key: cmd.Policy,
+	}
+	err = s.updateVSPVoteChoices(ctx, w, ticketHash, nil, nil, policyMap)
+
 	return nil, err
 }
 
 // tspendPolicy returns voting policies for particular treasury spends
 // transactions.  If a tspend transaction hash is specified, that policy is
 // returned; otherwise the policies for all known tspends are returned in an
-// array.
+// array.  If both a tspend transaction hash and a ticket hash are provided,
+// the per-ticket tspend policy is returned.
 func (s *Server) tspendPolicy(ctx context.Context, icmd interface{}) (interface{}, error) {
 	cmd := icmd.(*types.TSpendPolicyCmd)
 	w, ok := s.walletLoader.LoadedWallet()
 	if !ok {
 		return nil, errUnloadedWallet
+	}
+
+	var ticketHash *chainhash.Hash
+	if cmd.Ticket != nil && *cmd.Ticket != "" {
+		var err error
+		ticketHash, err = chainhash.NewHashFromStr(*cmd.Ticket)
+		if err != nil {
+			return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+		}
 	}
 
 	if cmd.Hash != nil && *cmd.Hash != "" {
@@ -3214,7 +4002,7 @@ func (s *Server) tspendPolicy(ctx context.Context, icmd interface{}) (interface{
 			return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
 		}
 		var policy string
-		switch w.TSpendPolicy(hash) {
+		switch w.TSpendPolicy(hash, ticketHash) {
 		case stake.TreasuryVoteYes:
 			policy = "yes"
 		case stake.TreasuryVoteNo:
@@ -3226,6 +4014,9 @@ func (s *Server) tspendPolicy(ctx context.Context, icmd interface{}) (interface{
 			Hash:   *cmd.Hash,
 			Policy: policy,
 		}
+		if cmd.Ticket != nil {
+			res.Ticket = *cmd.Ticket
+		}
 		return res, nil
 	}
 
@@ -3233,7 +4024,7 @@ func (s *Server) tspendPolicy(ctx context.Context, icmd interface{}) (interface{
 	res := make([]types.TSpendPolicyResult, 0, len(tspends))
 	for i := range tspends {
 		tspendHash := tspends[i].TxHash()
-		p := w.TSpendPolicy(&tspendHash)
+		p := w.TSpendPolicy(&tspendHash, ticketHash)
 
 		var policy string
 		switch p {
@@ -3242,16 +4033,23 @@ func (s *Server) tspendPolicy(ctx context.Context, icmd interface{}) (interface{
 		case stake.TreasuryVoteNo:
 			policy = "no"
 		}
-		res = append(res, types.TSpendPolicyResult{
+		r := types.TSpendPolicyResult{
 			Hash:   tspendHash.String(),
 			Policy: policy,
-		})
+		}
+		if cmd.Ticket != nil {
+			r.Ticket = *cmd.Ticket
+		}
+		res = append(res, r)
 	}
 	return res, nil
 }
 
 // setTSpendPolicy saves the voting policy for a particular tspend transaction
-// hash.
+// hash, and optionally, setting the tspend policy used by a specific ticket.
+//
+// If a VSP host is configured in the application settings, the voting
+// preferences will also be set with the VSP.
 func (s *Server) setTSpendPolicy(ctx context.Context, icmd interface{}) (interface{}, error) {
 	cmd := icmd.(*types.SetTSpendPolicyCmd)
 	w, ok := s.walletLoader.LoadedWallet()
@@ -3259,9 +4057,29 @@ func (s *Server) setTSpendPolicy(ctx context.Context, icmd interface{}) (interfa
 		return nil, errUnloadedWallet
 	}
 
+	if len(cmd.Hash) != chainhash.MaxHashStringSize {
+		err := fmt.Errorf("invalid tspend hash length, expected %d got %d",
+			chainhash.MaxHashStringSize, len(cmd.Hash))
+		return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+	}
+
 	hash, err := chainhash.NewHashFromStr(cmd.Hash)
 	if err != nil {
 		return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+	}
+
+	var ticketHash *chainhash.Hash
+	if cmd.Ticket != nil && *cmd.Ticket != "" {
+		if len(*cmd.Ticket) != chainhash.MaxHashStringSize {
+			err := fmt.Errorf("invalid ticket hash length, expected %d got %d",
+				chainhash.MaxHashStringSize, len(*cmd.Ticket))
+			return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+		}
+		var err error
+		ticketHash, err = chainhash.NewHashFromStr(*cmd.Ticket)
+		if err != nil {
+			return nil, rpcError(dcrjson.ErrRPCDecodeHexString, err)
+		}
 	}
 
 	var policy stake.TreasuryVoteT
@@ -3277,7 +4095,16 @@ func (s *Server) setTSpendPolicy(ctx context.Context, icmd interface{}) (interfa
 		return nil, rpcError(dcrjson.ErrRPCInvalidParameter, err)
 	}
 
-	err = w.SetTSpendPolicy(ctx, hash, policy)
+	err = w.SetTSpendPolicy(ctx, hash, policy, ticketHash)
+	if err != nil {
+		return nil, err
+	}
+
+	// Update voting preferences on VSPs if required.
+	policyMap := map[string]string{
+		cmd.Hash: cmd.Policy,
+	}
+	err = s.updateVSPVoteChoices(ctx, w, ticketHash, nil, policyMap, nil)
 	return nil, err
 }
 
@@ -3296,7 +4123,7 @@ func (s *Server) redeemMultiSigOut(ctx context.Context, icmd interface{}) (inter
 	// Convert the address to a useable format. If
 	// we have no address, create a new address in
 	// this wallet to send the output to.
-	var addr dcrutil.Address
+	var addr stdaddr.Address
 	var err error
 	if cmd.Address != nil {
 		addr, err = decodeAddress(*cmd.Address, w.ChainParams())
@@ -3327,19 +4154,15 @@ func (s *Server) redeemMultiSigOut(ctx context.Context, icmd interface{}) (inter
 	if err != nil {
 		return nil, err
 	}
-	sc := txscript.GetScriptClass(0,
-		p2shOutput.RedeemScript, true) // Yes treasury
-	if sc != txscript.MultiSigTy {
+	sc := stdscript.DetermineScriptType(scriptVersionAssumed, p2shOutput.RedeemScript)
+	if sc != stdscript.STMultiSig {
 		return nil, errors.E("P2SH redeem script is not multisig")
 	}
 	msgTx := wire.NewMsgTx()
 	txIn := wire.NewTxIn(&op, int64(p2shOutput.OutputAmount), nil)
 	msgTx.AddTxIn(txIn)
 
-	pkScript, _, err := addressScript(addr)
-	if err != nil {
-		return nil, err
-	}
+	_, pkScript := addr.PaymentScript()
 
 	err = w.PrepareRedeemMultiSigOutTxOutput(msgTx, p2shOutput, &pkScript)
 	if err != nil {
@@ -3347,10 +4170,7 @@ func (s *Server) redeemMultiSigOut(ctx context.Context, icmd interface{}) (inter
 	}
 
 	// Start creating the SignRawTransactionCmd.
-	outpointScript, err := txscript.PayToScriptHashScript(p2shOutput.P2SHAddress.Hash160()[:])
-	if err != nil {
-		return nil, err
-	}
+	_, outpointScript := p2shOutput.P2SHAddress.PaymentScript()
 	outpointScriptStr := hex.EncodeToString(outpointScript)
 
 	rti := types.RawTxInput{
@@ -3404,7 +4224,7 @@ func (s *Server) redeemMultiSigOuts(ctx context.Context, icmd interface{}) (inte
 	if err != nil {
 		return nil, err
 	}
-	p2shAddr, ok := addr.(*dcrutil.AddressScriptHash)
+	p2shAddr, ok := addr.(*stdaddr.AddressScriptHashV0)
 	if !ok {
 		return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter, "address is not P2SH")
 	}
@@ -3495,7 +4315,7 @@ func (s *Server) stakePoolUserInfo(ctx context.Context, icmd interface{}) (inter
 		return nil, errUnloadedWallet
 	}
 
-	userAddr, err := dcrutil.DecodeAddress(cmd.User, w.ChainParams())
+	userAddr, err := decodeStakeAddress(cmd.User, w.ChainParams())
 	if err != nil {
 		return nil, err
 	}
@@ -3579,10 +4399,10 @@ func (s *Server) ticketInfo(ctx context.Context, icmd interface{}) (interface{},
 				BlockHeight: -1,
 				Status:      status.String(),
 			}
-			_, addrs, _, err := txscript.ExtractPkScriptAddrs(out.Version,
-				out.PkScript, w.ChainParams(), true) // Yes treasury
-			if err != nil {
-				return false, err
+
+			_, addrs := stdscript.ExtractAddrs(out.Version, out.PkScript, w.ChainParams())
+			if len(addrs) == 0 {
+				return false, errors.New("unable to decode ticket pkScript")
 			}
 			info.VotingAddress = addrs[0].String()
 			if h != nil {
@@ -3608,6 +4428,12 @@ func (s *Server) ticketInfo(ctx context.Context, icmd interface{}) (interface{},
 				info.Choices[i].ChoiceID = choices[i].ChoiceID
 			}
 
+			host, err := w.VSPHostForTicket(ctx, t.Ticket.Hash)
+			if err != nil && !errors.Is(err, errors.NotExist) {
+				return false, err
+			}
+			info.VSPHost = host
+
 			res = append(res, info)
 		}
 		return false, nil
@@ -3620,13 +4446,13 @@ func (s *Server) ticketInfo(ctx context.Context, icmd interface{}) (interface{},
 // address. It will only return tickets that are in the mempool or blockchain,
 // and should not return pruned tickets.
 func (s *Server) ticketsForAddress(ctx context.Context, icmd interface{}) (interface{}, error) {
-	cmd := icmd.(*dcrdtypes.TicketsForAddressCmd)
+	cmd := icmd.(*types.TicketsForAddressCmd)
 	w, ok := s.walletLoader.LoadedWallet()
 	if !ok {
 		return nil, errUnloadedWallet
 	}
 
-	addr, err := dcrutil.DecodeAddress(cmd.Address, w.ChainParams())
+	addr, err := stdaddr.DecodeAddress(cmd.Address, w.ChainParams())
 	if err != nil {
 		return nil, err
 	}
@@ -3810,20 +4636,20 @@ func (s *Server) sendToMultiSig(ctx context.Context, icmd interface{}) (interfac
 	nrequired := int8(*cmd.NRequired)
 	minconf := int32(*cmd.MinConf)
 
-	pubKeyAddrs, err := walletPubKeys(ctx, w, cmd.Pubkeys)
+	pubKeys, err := walletPubKeys(ctx, w, cmd.Pubkeys)
 	if err != nil {
 		return nil, err
 	}
 
 	tx, addr, script, err :=
-		w.CreateMultisigTx(ctx, account, amount, pubKeyAddrs, nrequired, minconf)
+		w.CreateMultisigTx(ctx, account, amount, pubKeys, nrequired, minconf)
 	if err != nil {
 		return nil, err
 	}
 
 	result := &types.SendToMultiSigResult{
 		TxHash:       tx.MsgTx.TxHash().String(),
-		Address:      addr.Address(),
+		Address:      addr.String(),
 		RedeemScript: hex.EncodeToString(script),
 	}
 
@@ -3836,7 +4662,7 @@ func (s *Server) sendToMultiSig(ctx context.Context, icmd interface{}) (interfac
 // sendRawTransaction handles a sendrawtransaction RPC request by decoding hex
 // transaction and sending it to the network backend for propagation.
 func (s *Server) sendRawTransaction(ctx context.Context, icmd interface{}) (interface{}, error) {
-	cmd := icmd.(*dcrdtypes.SendRawTransactionCmd)
+	cmd := icmd.(*types.SendRawTransactionCmd)
 	w, ok := s.walletLoader.LoadedWallet()
 	if !ok {
 		return nil, errUnloadedWallet
@@ -3953,38 +4779,68 @@ func (s *Server) setVoteChoice(ctx context.Context, icmd interface{}) (interface
 		ticketHash = hash
 	}
 
-	choice := wallet.AgendaChoice{
-		AgendaID: cmd.AgendaID,
-		ChoiceID: cmd.ChoiceID,
+	choice := []wallet.AgendaChoice{
+		{
+			AgendaID: cmd.AgendaID,
+			ChoiceID: cmd.ChoiceID,
+		},
 	}
-	_, err := w.SetAgendaChoices(ctx, ticketHash, choice)
+	_, err := w.SetAgendaChoices(ctx, ticketHash, choice...)
 	if err != nil {
 		return nil, err
 	}
 
-	vspHost := s.cfg.VSPHost
-	if vspHost == "" {
-		return nil, nil
-	}
-	vspClient, err := loader.LookupVSP(vspHost)
-	if err != nil {
-		return nil, err
-	}
+	// Update voting preferences on VSPs if required.
+	err = s.updateVSPVoteChoices(ctx, w, ticketHash, choice, nil, nil)
+	return nil, err
+}
+
+func (s *Server) updateVSPVoteChoices(ctx context.Context, w *wallet.Wallet, ticketHash *chainhash.Hash,
+	choices []wallet.AgendaChoice, tspendPolicy map[string]string, treasuryPolicy map[string]string) error {
 	if ticketHash != nil {
-		err = vspClient.SetVoteChoice(ctx, ticketHash, choice)
-		return nil, err
+		vspHost, err := w.VSPHostForTicket(ctx, ticketHash)
+		if err != nil {
+			if errors.Is(err, errors.NotExist) {
+				// Ticket is not registered with a VSP, nothing more to do here.
+				return nil
+			}
+			return err
+		}
+		vspClient, err := loader.LookupVSP(vspHost)
+		if err != nil {
+			return err
+		}
+		err = vspClient.SetVoteChoice(ctx, ticketHash, choices, tspendPolicy, treasuryPolicy)
+		return err
 	}
 	var firstErr error
-	err = vspClient.ForUnspentUnexpiredTickets(ctx, func(hash *chainhash.Hash) error {
+	err := w.ForUnspentUnexpiredTickets(ctx, func(hash *chainhash.Hash) error {
+		vspHost, err := w.VSPHostForTicket(ctx, hash)
+		if err != nil && firstErr == nil {
+			if errors.Is(err, errors.NotExist) {
+				// Ticket is not registered with a VSP, nothing more to do here.
+				return nil
+			}
+			firstErr = err
+			return nil
+		}
+		vspClient, err := loader.LookupVSP(vspHost)
+		if err != nil && firstErr == nil {
+			firstErr = err
+			return nil
+		}
 		// Never return errors here, so all tickets are tried.
 		// The first error will be returned to the user.
-		err := vspClient.SetVoteChoice(ctx, hash, choice)
+		err = vspClient.SetVoteChoice(ctx, hash, choices, tspendPolicy, treasuryPolicy)
 		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 		return nil
 	})
-	return nil, firstErr
+	if err != nil {
+		return err
+	}
+	return firstErr
 }
 
 // signMessage signs the given message with the private key for the given
@@ -4092,7 +4948,7 @@ func (s *Server) signRawTransaction(ctx context.Context, icmd interface{}) (inte
 				return nil, err
 			}
 
-			addr, err := dcrutil.NewAddressScriptHash(redeemScript,
+			addr, err := stdaddr.NewAddressScriptHashV0(redeemScript,
 				w.ChainParams())
 			if err != nil {
 				return nil, err
@@ -4132,10 +4988,11 @@ func (s *Server) signRawTransaction(ctx context.Context, icmd interface{}) (inte
 			requestedGroup.Go(func() error {
 				hash := txIn.PreviousOutPoint.Hash.String()
 				index := txIn.PreviousOutPoint.Index
+				tree := txIn.PreviousOutPoint.Tree
 				// gettxout returns null without error if the output exists
 				// but is spent.  A double pointer is used to handle this case.
 				var res *dcrdtypes.GetTxOutResult
-				err := rpc.Call(gctx, "gettxout", &res, hash, index, true)
+				err := rpc.Call(gctx, "gettxout", &res, hash, index, tree, true)
 				if err != nil {
 					return errors.E(errors.Op("dcrd.jsonrpc.gettxout"), err)
 				}
@@ -4160,28 +5017,28 @@ func (s *Server) signRawTransaction(ctx context.Context, icmd interface{}) (inte
 				return nil, rpcError(dcrjson.ErrRPCDeserialization, err)
 			}
 
-			var addr dcrutil.Address
+			var addr stdaddr.Address
 			switch wif.DSA() {
 			case dcrec.STEcdsaSecp256k1:
-				addr, err = dcrutil.NewAddressSecpPubKey(wif.PubKey(),
-					w.ChainParams())
+				addr, err = stdaddr.NewAddressPubKeyEcdsaSecp256k1V0Raw(
+					wif.PubKey(), w.ChainParams())
 				if err != nil {
 					return nil, err
 				}
 			case dcrec.STEd25519:
-				addr, err = dcrutil.NewAddressEdwardsPubKey(
+				addr, err = stdaddr.NewAddressPubKeyEd25519V0Raw(
 					wif.PubKey(), w.ChainParams())
 				if err != nil {
 					return nil, err
 				}
 			case dcrec.STSchnorrSecp256k1:
-				addr, err = dcrutil.NewAddressSecSchnorrPubKey(
+				addr, err = stdaddr.NewAddressPubKeySchnorrSecp256k1V0Raw(
 					wif.PubKey(), w.ChainParams())
 				if err != nil {
 					return nil, err
 				}
 			}
-			keys[addr.Address()] = wif
+			keys[addr.String()] = wif
 		}
 	}
 
@@ -4333,15 +5190,12 @@ func (src *scriptChangeSource) ScriptSize() int {
 	return len(src.script)
 }
 
-func makeScriptChangeSource(address string, version uint16, params *chaincfg.Params) (*scriptChangeSource, error) {
-	destinationAddress, err := dcrutil.DecodeAddress(address, params)
+func makeScriptChangeSource(address string, params *chaincfg.Params) (*scriptChangeSource, error) {
+	destinationAddress, err := stdaddr.DecodeAddress(address, params)
 	if err != nil {
 		return nil, err
 	}
-	script, version, err := addressScript(destinationAddress)
-	if err != nil {
-		return nil, err
-	}
+	version, script := destinationAddress.PaymentScript()
 	source := &scriptChangeSource{
 		version: version,
 		script:  script,
@@ -4391,7 +5245,7 @@ func (s *Server) sweepAccount(ctx context.Context, icmd interface{}) (interface{
 		return nil, err
 	}
 
-	changeSource, err := makeScriptChangeSource(cmd.DestinationAddress, 0, w.ChainParams())
+	changeSource, err := makeScriptChangeSource(cmd.DestinationAddress, w.ChainParams())
 	if err != nil {
 		return nil, err
 	}
@@ -4423,7 +5277,7 @@ func (s *Server) sweepAccount(ctx context.Context, icmd interface{}) (interface{
 
 // validateAddress handles the validateaddress command.
 func (s *Server) validateAddress(ctx context.Context, icmd interface{}) (interface{}, error) {
-	cmd := icmd.(*dcrdtypes.ValidateAddressCmd)
+	cmd := icmd.(*types.ValidateAddressCmd)
 	w, ok := s.walletLoader.LoadedWallet()
 	if !ok {
 		return nil, errUnloadedWallet
@@ -4432,16 +5286,26 @@ func (s *Server) validateAddress(ctx context.Context, icmd interface{}) (interfa
 	result := types.ValidateAddressResult{}
 	addr, err := decodeAddress(cmd.Address, w.ChainParams())
 	if err != nil {
+		result.Script = stdscript.STNonStandard.String()
 		// Use result zero value (IsValid=false).
 		return result, nil
 	}
 
-	// We could put whether or not the address is a script here,
-	// by checking the type of "addr", however, the reference
-	// implementation only puts that information if the script is
-	// "ismine", and we follow that behaviour.
-	result.Address = addr.Address()
+	result.Address = addr.String()
 	result.IsValid = true
+	ver, scr := addr.PaymentScript()
+	class, _ := stdscript.ExtractAddrs(ver, scr, w.ChainParams())
+	result.Script = class.String()
+	if pker, ok := addr.(stdaddr.SerializedPubKeyer); ok {
+		result.PubKey = hex.EncodeToString(pker.SerializedPubKey())
+		result.PubKeyAddr = addr.String()
+	}
+	if class == stdscript.STScriptHash {
+		result.IsScript = true
+	}
+	if _, ok := addr.(stdaddr.Hash160er); ok {
+		result.IsCompressed = true
+	}
 
 	ka, err := w.KnownAddress(ctx, addr)
 	if err != nil {
@@ -4459,42 +5323,39 @@ func (s *Server) validateAddress(ctx context.Context, icmd interface{}) (interfa
 
 	switch ka := ka.(type) {
 	case wallet.PubKeyHashAddress:
-		result.IsCompressed = true
 		pubKey := ka.PubKey()
 		result.PubKey = hex.EncodeToString(pubKey)
-		pubKeyAddr, err := dcrutil.NewAddressSecpPubKey(pubKey, w.ChainParams())
+		pubKeyAddr, err := stdaddr.NewAddressPubKeyEcdsaSecp256k1V0Raw(pubKey, w.ChainParams())
 		if err != nil {
 			return nil, err
 		}
 		result.PubKeyAddr = pubKeyAddr.String()
 	case wallet.P2SHAddress:
-		result.IsScript = true
-		_, script := ka.RedeemScript()
+		version, script := ka.RedeemScript()
 		result.Hex = hex.EncodeToString(script)
 
-		// This typically shouldn't fail unless an invalid script was
-		// imported.  However, if it fails for any reason, there is no
-		// further information available, so just set the script type
-		// a non-standard and break out now.
-		class, addrs, reqSigs, err := txscript.ExtractPkScriptAddrs(
-			0, script, w.ChainParams(), true) // Yes treasury
-		if err != nil {
-			result.Script = txscript.NonStandardTy.String()
-			break
-		}
-
+		class, addrs := stdscript.ExtractAddrs(version, script, w.ChainParams())
 		addrStrings := make([]string, len(addrs))
 		for i, a := range addrs {
-			addrStrings[i] = a.Address()
+			addrStrings[i] = a.String()
 		}
 		result.Addresses = addrStrings
+		result.Script = class.String()
 
 		// Multi-signature scripts also provide the number of required
 		// signatures.
-		result.Script = class.String()
-		if class == txscript.MultiSigTy {
-			result.SigsRequired = int32(reqSigs)
+		if class == stdscript.STMultiSig {
+			result.SigsRequired = int32(stdscript.DetermineRequiredSigs(version, script))
 		}
+	}
+
+	if ka, ok := ka.(wallet.BIP0044Address); ok {
+		acct, branch, child := ka.Path()
+		if ka.AccountKind() != wallet.AccountKindImportedXpub {
+			result.AccountN = &acct
+		}
+		result.Branch = &branch
+		result.Index = &child
 	}
 
 	return result, nil
@@ -4514,12 +5375,12 @@ func (s *Server) validatePreDCP0005CF(ctx context.Context, icmd interface{}) (in
 // verifyMessage handles the verifymessage command by verifying the provided
 // compact signature for the given address and message.
 func (s *Server) verifyMessage(ctx context.Context, icmd interface{}) (interface{}, error) {
-	cmd := icmd.(*dcrdtypes.VerifyMessageCmd)
+	cmd := icmd.(*types.VerifyMessageCmd)
 
 	var valid bool
 
 	// Decode address and base64 signature from the request.
-	addr, err := dcrutil.DecodeAddress(cmd.Address, s.activeNet)
+	addr, err := stdaddr.DecodeAddress(cmd.Address, s.activeNet)
 	if err != nil {
 		return nil, err
 	}
@@ -4530,23 +5391,18 @@ func (s *Server) verifyMessage(ctx context.Context, icmd interface{}) (interface
 
 	// Addresses must have an associated secp256k1 private key and therefore
 	// must be P2PK or P2PKH (P2SH is not allowed).
-	switch a := addr.(type) {
-	case *dcrutil.AddressSecpPubKey:
-	case *dcrutil.AddressPubKeyHash:
-		if a.DSA() != dcrec.STEcdsaSecp256k1 {
-			goto WrongAddrKind
-		}
+	switch addr.(type) {
+	case *stdaddr.AddressPubKeyEcdsaSecp256k1V0:
+	case *stdaddr.AddressPubKeyHashEcdsaSecp256k1V0:
 	default:
-		goto WrongAddrKind
+		return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter,
+			"address must be secp256k1 P2PK or P2PKH")
 	}
 
 	valid, err = wallet.VerifyMessage(cmd.Message, addr, sig, s.activeNet)
 	// Mirror Bitcoin Core behavior, which treats all erorrs as an invalid
 	// signature.
 	return err == nil && valid, nil
-
-WrongAddrKind:
-	return nil, rpcErrorf(dcrjson.ErrRPCInvalidParameter, "address must be secp256k1 P2PK or P2PKH")
 }
 
 // version handles the version command by returning the RPC API versions of the
@@ -4581,18 +5437,28 @@ func (s *Server) walletInfo(ctx context.Context, icmd interface{}) (interface{},
 		return nil, errUnloadedWallet
 	}
 
-	n, err := w.NetworkBackend()
-	connected := err == nil
-	if connected {
-		if rpc, ok := n.(*dcrd.RPC); ok {
-			err := rpc.Call(ctx, "ping", nil)
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
-			}
-			if err != nil {
-				log.Warnf("Ping failed on connected daemon client: %v", err)
-				connected = false
-			}
+	var connected, spvMode bool
+	switch n, _ := w.NetworkBackend(); rpc := n.(type) {
+	case *spv.Syncer:
+		spvMode = true
+		connected = len(rpc.GetRemotePeers()) > 0
+	case *dcrd.RPC:
+		err := rpc.Call(ctx, "ping", nil)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if err != nil {
+			log.Warnf("Ping failed on connected daemon client: %v", err)
+		} else {
+			connected = true
+		}
+	case nil:
+		log.Warnf("walletInfo - no network backend")
+	default:
+		log.Errorf("walletInfo - invalid network backend (%T).", n)
+		return nil, &dcrjson.RPCError{
+			Code:    dcrjson.ErrRPCMisc,
+			Message: "invalid network backend",
 		}
 	}
 
@@ -4616,6 +5482,7 @@ func (s *Server) walletInfo(ctx context.Context, icmd interface{}) (interface{},
 
 	return &types.WalletInfoResult{
 		DaemonConnected:  connected,
+		SPV:              spvMode,
 		Unlocked:         unlocked,
 		CoinType:         coinType,
 		TxFee:            fi.ToCoin(),
@@ -4819,6 +5686,40 @@ func (s *Server) setAccountPassphrase(ctx context.Context, icmd interface{}) (in
 	}
 	err = w.SetAccountPassphrase(ctx, account, []byte(cmd.Passphrase))
 	return nil, err
+}
+
+func (s *Server) accountUnlocked(ctx context.Context, icmd interface{}) (interface{}, error) {
+	cmd := icmd.(*types.AccountUnlockedCmd)
+	w, ok := s.walletLoader.LoadedWallet()
+	if !ok {
+		return nil, errUnloadedWallet
+	}
+
+	account, err := w.AccountNumber(ctx, cmd.Account)
+	if err != nil {
+		if errors.Is(err, errors.NotExist) {
+			return nil, errAccountNotFound
+		}
+		return nil, err
+	}
+
+	encrypted, err := w.AccountHasPassphrase(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	if !encrypted {
+		return &types.AccountUnlockedResult{}, nil
+	}
+
+	unlocked, err := w.AccountUnlocked(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+
+	return &types.AccountUnlockedResult{
+		Encrypted: true,
+		Unlocked:  &unlocked,
+	}, nil
 }
 
 func (s *Server) accountUnlocked(ctx context.Context, icmd interface{}) (interface{}, error) {

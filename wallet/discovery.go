@@ -10,14 +10,14 @@ import (
 	"runtime"
 	"sync"
 
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/rpc/client/dcrd"
-	"decred.org/dcrwallet/validate"
-	"decred.org/dcrwallet/wallet/udb"
-	"decred.org/dcrwallet/wallet/walletdb"
-	"github.com/decred/dcrd/blockchain/stake/v3"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/rpc/client/dcrd"
+	"decred.org/dcrwallet/v2/validate"
+	"decred.org/dcrwallet/v2/wallet/udb"
+	"decred.org/dcrwallet/v2/wallet/walletdb"
+	"github.com/decred/dcrd/blockchain/stake/v4"
 	"github.com/decred/dcrd/chaincfg/chainhash"
-	"github.com/decred/dcrd/gcs/v2/blockcf2"
+	"github.com/decred/dcrd/gcs/v3/blockcf2"
 	hd "github.com/decred/dcrd/hdkeychain/v3"
 	"github.com/decred/dcrd/wire"
 	"golang.org/x/sync/errgroup"
@@ -35,7 +35,7 @@ func blockCommitments(block *wire.MsgBlock) map[string]struct{} {
 		}
 	}
 	for _, tx := range block.STransactions {
-		switch stake.DetermineTxType(tx, true) { // yes treasury
+		switch stake.DetermineTxType(tx, true, false) {
 		case stake.TxTypeSStx: // Ticket purchase
 			for i := 2; i < len(tx.TxOut); i += 2 { // Iterate change outputs
 				out := tx.TxOut[i]
@@ -109,11 +109,11 @@ type addrFinder struct {
 	mu          sync.RWMutex
 }
 
-func newAddrFinder(ctx context.Context, w *Wallet) (*addrFinder, error) {
+func newAddrFinder(ctx context.Context, w *Wallet, gapLimit uint32) (*addrFinder, error) {
 	a := &addrFinder{
 		w:           w,
-		gaplimit:    w.gapLimit,
-		segments:    hd.HardenedKeyStart / w.gapLimit,
+		gaplimit:    gapLimit,
+		segments:    hd.HardenedKeyStart / gapLimit,
 		commitments: make(blockCommitmentCache),
 	}
 	err := walletdb.View(ctx, w.db, func(dbtx walletdb.ReadTx) error {
@@ -212,11 +212,7 @@ func (a *addrFinder) find(ctx context.Context, start *chainhash.Hash, p Peer) er
 				return err
 			}
 			for i, addr := range addrs {
-				scr, _, err := addressScript(addr)
-				if err != nil {
-					log.Errorf("addressScript(%v): %v", addr, err)
-					continue
-				}
+				_, scr := addr.PaymentScript()
 				data = append(data, scr)
 				scrPaths[string(scr)] = scriptPath{
 					usageIndex: usageIndex,
@@ -452,11 +448,7 @@ func (w *Wallet) findLastUsedAccount(ctx context.Context, p Peer, blockCache blo
 				return 0, err
 			}
 			for _, a := range addrs {
-				script, _, err := addressScript(a)
-				if err != nil {
-					log.Warnf("Failed to create output script for address %v: %v", a, err)
-					continue
-				}
+				_, script := a.PaymentScript()
 				addrScriptAccts[string(script)] = acct
 				addrScripts = append(addrScripts, script)
 			}
@@ -465,11 +457,7 @@ func (w *Wallet) findLastUsedAccount(ctx context.Context, p Peer, blockCache blo
 				return 0, err
 			}
 			for _, a := range addrs {
-				script, _, err := addressScript(a)
-				if err != nil {
-					log.Warnf("Failed to create output script for address %v: %v", a, err)
-					continue
-				}
+				_, script := a.PaymentScript()
 				addrScriptAccts[string(script)] = acct
 				addrScripts = append(addrScripts, script)
 			}
@@ -548,8 +536,9 @@ func (w *Wallet) findLastUsedAccount(ctx context.Context, p Peer, blockCache blo
 // existsAddrIndexFinder implements address and account discovery using the
 // exists address index of a trusted dcrd RPC server.
 type existsAddrIndexFinder struct {
-	wallet *Wallet
-	rpc    *dcrd.RPC
+	wallet   *Wallet
+	rpc      *dcrd.RPC
+	gapLimit uint32
 }
 
 func (f *existsAddrIndexFinder) findLastUsedAccount(ctx context.Context, coinTypeXpriv *hd.ExtendedKey) (uint32, error) {
@@ -656,7 +645,7 @@ func (f *existsAddrIndexFinder) branchUsed(ctx context.Context, branchXpub *hd.E
 func (f *existsAddrIndexFinder) findLastUsedAddress(ctx context.Context, xpub *hd.ExtendedKey) (uint32, error) {
 	var (
 		lastUsed        = ^uint32(0)
-		scanLen         = f.wallet.gapLimit
+		scanLen         = f.gapLimit
 		segments        = hd.HardenedKeyStart / scanLen
 		lo, hi   uint32 = 0, segments - 1
 	)
@@ -783,7 +772,7 @@ func (w *Wallet) DiscoverActiveAddresses(ctx context.Context, p Peer, startBlock
 		var lastUsed uint32
 		rpc, ok := rpcFromPeer(p)
 		if ok {
-			f := existsAddrIndexFinder{w, rpc}
+			f := existsAddrIndexFinder{w, rpc, gapLimit}
 			lastUsed, err = f.findLastUsedAccount(ctx, coinTypePrivKey)
 		} else {
 			lastUsed, err = w.findLastUsedAccount(ctx, p, blockAddresses, coinTypePrivKey, gapLimit)
@@ -841,7 +830,7 @@ func (w *Wallet) DiscoverActiveAddresses(ctx context.Context, p Peer, startBlock
 
 	// Discover address usage within known accounts
 	// Usage recorded in finder.usage
-	finder, err := newAddrFinder(ctx, w)
+	finder, err := newAddrFinder(ctx, w, gapLimit)
 	if err != nil {
 		return errors.E(op, err)
 	}
@@ -849,7 +838,7 @@ func (w *Wallet) DiscoverActiveAddresses(ctx context.Context, p Peer, startBlock
 	lastUsed := append([]accountUsage(nil), finder.usage...)
 	rpc, ok := rpcFromPeer(p)
 	if ok {
-		f := existsAddrIndexFinder{w, rpc}
+		f := existsAddrIndexFinder{w, rpc, gapLimit}
 		err = f.find(ctx, finder)
 	} else {
 		err = finder.find(ctx, startBlock, p)

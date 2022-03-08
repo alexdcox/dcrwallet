@@ -9,13 +9,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
-	"io/ioutil"
 	"strings"
 
-	"decred.org/dcrwallet/errors"
+	"decred.org/dcrwallet/v2/errors"
 	"github.com/decred/dcrd/chaincfg/chainhash"
-	"github.com/decred/dcrd/gcs/v2"
-	blockcf "github.com/decred/dcrd/gcs/v2/blockcf2"
+	"github.com/decred/dcrd/gcs/v3"
+	blockcf "github.com/decred/dcrd/gcs/v3/blockcf2"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -55,7 +54,7 @@ type cfilterV2 struct {
 }
 
 func (f *cfilterV2) Deserialize(r io.Reader) error {
-	b, err := ioutil.ReadAll(r)
+	b, err := io.ReadAll(r)
 	if err != nil {
 		return err
 	}

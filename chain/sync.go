@@ -14,18 +14,18 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/rpc/client/dcrd"
-	"decred.org/dcrwallet/validate"
-	"decred.org/dcrwallet/wallet"
-	"github.com/decred/dcrd/blockchain/stake/v3"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/rpc/client/dcrd"
+	"decred.org/dcrwallet/v2/validate"
+	"decred.org/dcrwallet/v2/wallet"
+	"github.com/decred/dcrd/blockchain/stake/v4"
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/wire"
 	"github.com/jrick/wsrpc/v2"
 	"golang.org/x/sync/errgroup"
 )
 
-var requiredAPIVersion = semver{Major: 6, Minor: 0, Patch: 0}
+var requiredAPIVersion = semver{Major: 7, Minor: 0, Patch: 0}
 
 // Syncer implements wallet synchronization services by processing
 // notifications from a dcrd JSON-RPC server.
@@ -92,6 +92,14 @@ type Callbacks struct {
 // to notify interested parties to the syncing progress.
 func (s *Syncer) SetCallbacks(cb *Callbacks) {
 	s.cb = cb
+}
+
+// DisableDiscoverAccounts disables account discovery. This has an effect only
+// if called before the main Run() executes the account discovery process.
+func (s *Syncer) DisableDiscoverAccounts() {
+	s.mu.Lock()
+	s.discoverAccts = false
+	s.mu.Unlock()
 }
 
 // synced checks the atomic that controls wallet syncness and if previously

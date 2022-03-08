@@ -3,9 +3,9 @@ package txrules_test
 import (
 	"testing"
 
-	. "decred.org/dcrwallet/wallet/txrules"
+	. "decred.org/dcrwallet/v2/wallet/txrules"
 	"github.com/decred/dcrd/chaincfg/v3"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
 )
 
 func TestStakePoolTicketFee(t *testing.T) {
@@ -24,7 +24,7 @@ func TestStakePoolTicketFee(t *testing.T) {
 	}
 	for i, test := range tests {
 		poolFeeAmt := StakePoolTicketFee(test.StakeDiff, test.Fee, test.Height,
-			test.PoolFee, params)
+			test.PoolFee, params, false)
 		if poolFeeAmt != test.Expected {
 			t.Errorf("Test %d: Got %v: Want %v", i, poolFeeAmt, test.Expected)
 		}

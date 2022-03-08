@@ -11,14 +11,14 @@ import (
 	"runtime/debug"
 	"time"
 
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/wallet/walletdb"
-	"github.com/decred/dcrd/blockchain/stake/v3"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/wallet/walletdb"
+	"github.com/decred/dcrd/blockchain/stake/v4"
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/chaincfg/v3"
 	"github.com/decred/dcrd/crypto/ripemd160"
-	"github.com/decred/dcrd/dcrutil/v3"
-	"github.com/decred/dcrd/txscript/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
+	"github.com/decred/dcrd/txscript/v4"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -159,6 +159,7 @@ var (
 	rootTipBlock     = []byte("tip")
 	rootHaveCFilters = []byte("havecfilters")
 	rootLastTxsBlock = []byte("lasttxsblock")
+	rootVSPHostIndex = []byte("vsphostindex")
 )
 
 // The root bucket's mined balance k/v pair records the total balance for all
@@ -568,7 +569,7 @@ func readRawTxRecord(txHash *chainhash.Hash, v []byte, rec *TxRecord) error {
 	}
 
 	// Calculate the stake TxType from the MsgTx.
-	rec.TxType = stake.DetermineTxType(&rec.MsgTx, true) // Yes treasury
+	rec.TxType = stake.DetermineTxType(&rec.MsgTx, true, false)
 
 	return nil
 }

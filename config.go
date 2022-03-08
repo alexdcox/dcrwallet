@@ -10,23 +10,24 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/user"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/internal/cfgutil"
-	"decred.org/dcrwallet/internal/netparams"
-	"decred.org/dcrwallet/version"
-	"decred.org/dcrwallet/wallet"
-	"decred.org/dcrwallet/wallet/txrules"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/internal/cfgutil"
+	"decred.org/dcrwallet/v2/internal/netparams"
+	"decred.org/dcrwallet/v2/version"
+	"decred.org/dcrwallet/v2/wallet"
+	"decred.org/dcrwallet/v2/wallet/txrules"
 	"github.com/decred/dcrd/connmgr/v3"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/decred/go-socks/socks"
 	"github.com/decred/slog"
 	flags "github.com/jessevdk/go-flags"
@@ -38,6 +39,7 @@ const (
 	defaultLogLevel                = "info"
 	defaultLogDirname              = "logs"
 	defaultLogFilename             = "dcrwallet.log"
+	defaultLogSize                 = "10M"
 	defaultRPCMaxClients           = 10
 	defaultRPCMaxWebsockets        = 25
 	defaultAuthType                = "basic"
@@ -53,9 +55,11 @@ const (
 	defaultAccountGapLimit         = wallet.DefaultAccountGapLimit
 	defaultDisableCoinTypeUpgrades = false
 	defaultCircuitLimit            = 32
+	defaultMixSplitLimit           = 10
 
 	// ticket buyer options
 	defaultBalanceToMaintainAbsolute = 0
+	defaultTicketbuyerLimit          = 1
 
 	walletDbName = "wallet.db"
 )
@@ -83,6 +87,8 @@ type config struct {
 	NoInitialLoad      bool                    `long:"noinitialload" description:"Defer wallet creation/opening on startup and enable loading wallets over RPC"`
 	DebugLevel         string                  `short:"d" long:"debuglevel" description:"Logging level {trace, debug, info, warn, error, critical}"`
 	LogDir             *cfgutil.ExplicitString `long:"logdir" description:"Directory to log output."`
+	LogSize            string                  `long:"logsize" description:"Maximum size of log file before it is rotated"`
+	NoFileLogging      bool                    `long:"nofilelogging" description:"Disable file logging"`
 	Profile            []string                `long:"profile" description:"Enable HTTP profiling this interface/port"`
 	MemProfile         string                  `long:"memprofile" description:"Write mem profile to the specified file"`
 
@@ -95,7 +101,7 @@ type config struct {
 	EnableVoting            bool                 `long:"enablevoting" description:"Automatically create votes and revocations"`
 	PurchaseAccount         string               `long:"purchaseaccount" description:"Account to autobuy tickets from"`
 	PoolAddress             *cfgutil.AddressFlag `long:"pooladdress" description:"VSP fee address"`
-	poolAddress             dcrutil.Address
+	poolAddress             stdaddr.StakeAddress
 	PoolFees                float64             `long:"poolfees" description:"VSP fee percentage (1.00 equals 1.00% fee)"`
 	GapLimit                uint32              `long:"gaplimit" description:"Allowed unused address gap between used addresses of accounts"`
 	StakePoolColdExtKey     string              `long:"stakepoolcoldextkey" description:"xpub:maxindex for fee addresses (VSP-only option)"`
@@ -159,6 +165,7 @@ type config struct {
 	TicketSplitAccount string `long:"ticketsplitaccount" description:"Account to derive fresh addresses from for mixed ticket splits; uses mixedaccount if unset"`
 	ChangeAccount      string `long:"changeaccount" description:"Account used to derive unmixed CoinJoin outputs in CoinShuffle++ protocol"`
 	MixChange          bool   `long:"mixchange" description:"Use CoinShuffle++ to mix change account outputs into mix account"`
+	MixSplitLimit      int    `long:"mixsplitlimit" description:"Connection limit to CoinShuffle++ server per change amount"`
 
 	TBOpts ticketBuyerOptions `group:"Ticket Buyer Options" namespace:"ticketbuyer"`
 
@@ -168,8 +175,8 @@ type config struct {
 type ticketBuyerOptions struct {
 	BalanceToMaintainAbsolute *cfgutil.AmountFlag  `long:"balancetomaintainabsolute" description:"Amount of funds to keep in wallet when purchasing tickets"`
 	VotingAddress             *cfgutil.AddressFlag `long:"votingaddress" description:"Purchase tickets with voting rights assigned to this address"`
-	votingAddress             dcrutil.Address
-	Limit                     uint   `long:"limit" description:"Buy no more than specified number of tickets per block (0 disables limit)"`
+	votingAddress             stdaddr.StakeAddress
+	Limit                     uint   `long:"limit" description:"Buy no more than specified number of tickets per block"`
 	VotingAccount             string `long:"votingaccount" description:"Account used to derive addresses specifying voting rights"`
 }
 
@@ -332,6 +339,7 @@ func loadConfig(ctx context.Context) (*config, []string, error) {
 		ConfigFile:              cfgutil.NewExplicitString(defaultConfigFile),
 		AppDataDir:              cfgutil.NewExplicitString(defaultAppDataDir),
 		LogDir:                  cfgutil.NewExplicitString(defaultLogDir),
+		LogSize:                 defaultLogSize,
 		WalletPass:              wallet.InsecurePubPassphrase,
 		CAFile:                  cfgutil.NewExplicitString(""),
 		ClientCAFile:            cfgutil.NewExplicitString(defaultRPCClientCAFile),
@@ -357,15 +365,17 @@ func loadConfig(ctx context.Context) (*config, []string, error) {
 		AccountGapLimit:         defaultAccountGapLimit,
 		DisableCoinTypeUpgrades: defaultDisableCoinTypeUpgrades,
 		CircuitLimit:            defaultCircuitLimit,
+		MixSplitLimit:           defaultMixSplitLimit,
 
 		// Ticket Buyer Options
 		TBOpts: ticketBuyerOptions{
 			BalanceToMaintainAbsolute: cfgutil.NewAmountFlag(defaultBalanceToMaintainAbsolute),
 			VotingAddress:             cfgutil.NewAddressFlag(),
+			Limit:                     defaultTicketbuyerLimit,
 		},
 
 		VSPOpts: vspOptions{
-			MaxFee: cfgutil.NewAmountFlag(0.1e8),
+			MaxFee: cfgutil.NewAmountFlag(0.2e8),
 		},
 	}
 
@@ -465,10 +475,49 @@ func loadConfig(ctx context.Context) (*config, []string, error) {
 		return loadConfigError(err)
 	}
 
-	// Append the network type to the log directory so it is "namespaced"
-	// per network.
-	cfg.LogDir.Value = cleanAndExpandPath(cfg.LogDir.Value)
-	cfg.LogDir.Value = filepath.Join(cfg.LogDir.Value, activeNet.Params.Name)
+	if !cfg.NoFileLogging {
+		// Append the network type to the log directory so it is
+		// "namespaced" per network.
+		cfg.LogDir.Value = cleanAndExpandPath(cfg.LogDir.Value)
+		cfg.LogDir.Value = filepath.Join(cfg.LogDir.Value,
+			activeNet.Params.Name)
+
+		var units int
+		for i, r := range cfg.LogSize {
+			if r < '0' || r > '9' {
+				units = i
+				break
+			}
+		}
+		invalidSize := func() error {
+			str := "%s: Invalid logsize: %v "
+			err := errors.Errorf(str, funcName, cfg.LogSize)
+			fmt.Fprintln(os.Stderr, err)
+			return err
+		}
+		if units == 0 {
+			return loadConfigError(invalidSize())
+		}
+		// Parsing a 32-bit number prevents 64-bit overflow after unit
+		// multiplication.
+		logsize, err := strconv.ParseInt(cfg.LogSize[:units], 10, 32)
+		if err != nil {
+			return loadConfigError(invalidSize())
+		}
+		switch cfg.LogSize[units:] {
+		case "k", "K", "KiB":
+		case "m", "M", "MiB":
+			logsize <<= 10
+		case "g", "G", "GiB":
+			logsize <<= 20
+		default:
+			return loadConfigError(invalidSize())
+		}
+
+		// Initialize log rotation.  After log rotation has been initialized, the
+		// logger variables may be used.
+		initLogRotator(filepath.Join(cfg.LogDir.Value, defaultLogFilename), logsize)
+	}
 
 	// Special show command to list supported subsystems and exit.
 	if cfg.DebugLevel == "show" {
@@ -476,19 +525,15 @@ func loadConfig(ctx context.Context) (*config, []string, error) {
 		os.Exit(0)
 	}
 
-	// Initialize log rotation.  After log rotation has been initialized, the
-	// logger variables may be used.
-	initLogRotator(filepath.Join(cfg.LogDir.Value, defaultLogFilename))
-
 	// Check that no addresses were created for the wrong network
 	for _, a := range []struct {
 		flag *cfgutil.AddressFlag
-		addr *dcrutil.Address
+		addr *stdaddr.StakeAddress
 	}{
 		{cfg.PoolAddress, &cfg.poolAddress},
 		{cfg.TBOpts.VotingAddress, &cfg.TBOpts.votingAddress},
 	} {
-		addr, err := a.flag.Address(activeNet.Params)
+		addr, err := a.flag.StakeAddress(activeNet.Params)
 		if err != nil {
 			log.Error(err)
 			return loadConfigError(err)
@@ -715,7 +760,7 @@ func loadConfig(ctx context.Context) (*config, []string, error) {
 	}
 	if cfg.CSPPServerCA != "" {
 		cfg.CSPPServerCA = cleanAndExpandPath(cfg.CSPPServerCA)
-		ca, err := ioutil.ReadFile(cfg.CSPPServerCA)
+		ca, err := os.ReadFile(cfg.CSPPServerCA)
 		if err != nil {
 			err := errors.Errorf("Cannot read CoinShuffle++ "+
 				"Certificate Authority file: %v", err)

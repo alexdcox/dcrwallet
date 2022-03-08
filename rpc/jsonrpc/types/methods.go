@@ -9,8 +9,8 @@
 package types
 
 import (
-	"github.com/decred/dcrd/dcrjson/v3"
-	dcrdtypes "github.com/decred/dcrd/rpc/jsonrpc/types/v2"
+	"github.com/decred/dcrd/dcrjson/v4"
+	dcrdtypes "github.com/decred/dcrd/rpc/jsonrpc/types/v3"
 )
 
 // Method describes the exact type used when registering methods with dcrjson.
@@ -925,10 +925,21 @@ func NewSendFromTreasuryCmd(pubkey string, amounts map[string]float64) *SendFrom
 	}
 }
 
+// DisapprovePercentCmd defines the parameters for the disapprovepercent
+// JSON-RPC command.
+type DisapprovePercentCmd struct{}
+
+// SetDisapprovePercentCmd defines the parameters for the setdisapprovepercent
+// JSON-RPC command.
+type SetDisapprovePercentCmd struct {
+	Percent uint32
+}
+
 // TreasuryPolicyCmd defines the parameters for the treasurypolicy JSON-RPC
 // command.
 type TreasuryPolicyCmd struct {
-	Key *string
+	Key    *string
+	Ticket *string
 }
 
 // SetTreasuryPolicyCmd defines the parameters for the settreasurypolicy
@@ -936,12 +947,24 @@ type TreasuryPolicyCmd struct {
 type SetTreasuryPolicyCmd struct {
 	Key    string
 	Policy string
+	Ticket *string
+}
+
+// NewSetTreasuryPolicyCmd returns a new instance which can be used to issue a settreasurypolicy
+// JSON-RPC command.
+func NewSetTreasuryPolicyCmd(key string, policy string, ticket *string) *SetTreasuryPolicyCmd {
+	return &SetTreasuryPolicyCmd{
+		Key:    key,
+		Policy: policy,
+		Ticket: ticket,
+	}
 }
 
 // TSpendPolicyCmd defines the parameters for the tspendpolicy JSON-RPC
 // command.
 type TSpendPolicyCmd struct {
-	Hash *string
+	Hash   *string
+	Ticket *string
 }
 
 // SetTSpendPolicyCmd defines the parameters for the settspendpolicy
@@ -949,6 +972,17 @@ type TSpendPolicyCmd struct {
 type SetTSpendPolicyCmd struct {
 	Hash   string
 	Policy string
+	Ticket *string
+}
+
+// NewSetTSpendPolicyCmd returns a new instance which can be used to issue a settspendpolicy
+// JSON-RPC command.
+func NewSetTSpendPolicyCmd(hash string, policy string, ticket *string) *SetTSpendPolicyCmd {
+	return &SetTSpendPolicyCmd{
+		Hash:   hash,
+		Policy: policy,
+		Ticket: ticket,
+	}
 }
 
 // SetTxFeeCmd defines the settxfee JSON-RPC command.
@@ -1190,6 +1224,11 @@ type AccountUnlockedCmd struct {
 	Account string
 }
 
+// ProcessUnmanagedTicket defines the processunmanagedticket JSON-RPC command arguments.
+type ProcessUnmanagedTicketCmd struct {
+	TicketHash *string
+}
+
 type registeredMethod struct {
 	method string
 	cmd    interface{}
@@ -1212,6 +1251,7 @@ func init() {
 		{"createnewaccount", (*CreateNewAccountCmd)(nil)},
 		{"createsignature", (*CreateSignatureCmd)(nil)},
 		{"createvotingaccount", (*CreateVotingAccountCmd)(nil)},
+		{"disapprovepercent", (*DisapprovePercentCmd)(nil)},
 		{"discoverusage", (*DiscoverUsageCmd)(nil)},
 		{"dumpprivkey", (*DumpPrivKeyCmd)(nil)},
 		{"fundrawtransaction", (*FundRawTransactionCmd)(nil)},
@@ -1252,6 +1292,7 @@ func init() {
 		{"mixaccount", (*MixAccountCmd)(nil)},
 		{"mixoutput", (*MixOutputCmd)(nil)},
 		{"purchaseticket", (*PurchaseTicketCmd)(nil)},
+		{"processunmanagedticket", (*ProcessUnmanagedTicketCmd)(nil)},
 		{"redeemmultisigout", (*RedeemMultiSigOutCmd)(nil)},
 		{"redeemmultisigouts", (*RedeemMultiSigOutsCmd)(nil)},
 		{"renameaccount", (*RenameAccountCmd)(nil)},
@@ -1264,6 +1305,7 @@ func init() {
 		{"sendtomultisig", (*SendToMultiSigCmd)(nil)},
 		{"sendtotreasury", (*SendToTreasuryCmd)(nil)},
 		{"setaccountpassphrase", (*SetAccountPassphraseCmd)(nil)},
+		{"setdisapprovepercent", (*SetDisapprovePercentCmd)(nil)},
 		{"settreasurypolicy", (*SetTreasuryPolicyCmd)(nil)},
 		{"settspendpolicy", (*SetTSpendPolicyCmd)(nil)},
 		{"settxfee", (*SetTxFeeCmd)(nil)},
@@ -1292,19 +1334,24 @@ func init() {
 
 	// dcrd methods also implemented by dcrwallet
 	register = []registeredMethod{
-		{"createrawtransaction", (*dcrdtypes.CreateRawTransactionCmd)(nil)},
-		{"getbestblock", (*dcrdtypes.GetBestBlockCmd)(nil)},
-		{"getbestblockhash", (*dcrdtypes.GetBestBlockHashCmd)(nil)},
-		{"getblockcount", (*dcrdtypes.GetBlockCountCmd)(nil)},
-		{"getblockhash", (*dcrdtypes.GetBlockHashCmd)(nil)},
-		{"getinfo", (*dcrdtypes.GetInfoCmd)(nil)},
-		{"getpeerinfo", (*dcrdtypes.GetPeerInfoCmd)(nil)},
-		{"help", (*dcrdtypes.HelpCmd)(nil)},
-		{"sendrawtransaction", (*dcrdtypes.SendRawTransactionCmd)(nil)},
-		{"ticketsforaddress", (*dcrdtypes.TicketsForAddressCmd)(nil)},
-		{"validateaddress", (*dcrdtypes.ValidateAddressCmd)(nil)},
-		{"verifymessage", (*dcrdtypes.VerifyMessageCmd)(nil)},
-		{"version", (*dcrdtypes.VersionCmd)(nil)},
+		{"createrawtransaction", (*CreateRawTransactionCmd)(nil)},
+		{"getbestblock", (*GetBestBlockCmd)(nil)},
+		{"getbestblockhash", (*GetBestBlockHashCmd)(nil)},
+		{"getblockcount", (*GetBlockCountCmd)(nil)},
+		{"getblockhash", (*GetBlockHashCmd)(nil)},
+		{"getblockheader", (*GetBlockHeaderCmd)(nil)},
+		{"getblock", (*GetBlockCmd)(nil)},
+		{"getcfilterv2", (*GetCFilterV2Cmd)(nil)},
+		{"getcurrentnet", (*GetCurrentNetCmd)(nil)},
+		{"getinfo", (*GetInfoCmd)(nil)},
+		{"getpeerinfo", (*GetPeerInfoCmd)(nil)},
+		{"gettxout", (*GetTxOutCmd)(nil)},
+		{"help", (*HelpCmd)(nil)},
+		{"sendrawtransaction", (*SendRawTransactionCmd)(nil)},
+		{"ticketsforaddress", (*TicketsForAddressCmd)(nil)},
+		{"validateaddress", (*ValidateAddressCmd)(nil)},
+		{"verifymessage", (*VerifyMessageCmd)(nil)},
+		{"version", (*VersionCmd)(nil)},
 	}
 	for i := range register {
 		dcrjson.MustRegister(Method(register[i].method), register[i].cmd, 0)
@@ -1312,10 +1359,33 @@ func init() {
 
 	// Websocket-specific methods implemented by dcrwallet
 	register = []registeredMethod{
-		{"authenticate", (*dcrdtypes.AuthenticateCmd)(nil)},
+		{"authenticate", (*AuthenticateCmd)(nil)},
 	}
 	for i := range register {
 		dcrjson.MustRegister(Method(register[i].method), register[i].cmd,
 			dcrjson.UFWebsocketOnly)
 	}
 }
+
+// newtype definitions of dcrd commands we implement.
+type (
+	AuthenticateCmd         dcrdtypes.AuthenticateCmd
+	CreateRawTransactionCmd dcrdtypes.CreateRawTransactionCmd
+	GetBestBlockCmd         dcrdtypes.GetBestBlockCmd
+	GetBestBlockHashCmd     dcrdtypes.GetBestBlockHashCmd
+	GetBlockCountCmd        dcrdtypes.GetBlockCountCmd
+	GetBlockHashCmd         dcrdtypes.GetBlockHashCmd
+	GetBlockHeaderCmd       dcrdtypes.GetBlockHeaderCmd
+	GetBlockCmd             dcrdtypes.GetBlockCmd
+	GetCFilterV2Cmd         dcrdtypes.GetCFilterV2Cmd
+	GetCurrentNetCmd        dcrdtypes.GetCurrentNetCmd
+	GetInfoCmd              dcrdtypes.GetInfoCmd
+	GetPeerInfoCmd          dcrdtypes.GetPeerInfoCmd
+	GetTxOutCmd             dcrdtypes.GetTxOutCmd
+	HelpCmd                 dcrdtypes.HelpCmd
+	SendRawTransactionCmd   dcrdtypes.SendRawTransactionCmd
+	TicketsForAddressCmd    dcrdtypes.TicketsForAddressCmd
+	ValidateAddressCmd      dcrdtypes.ValidateAddressCmd
+	VerifyMessageCmd        dcrdtypes.VerifyMessageCmd
+	VersionCmd              dcrdtypes.VersionCmd
+)

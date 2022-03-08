@@ -11,18 +11,18 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 
-	"decred.org/dcrwallet/rpc/jsonrpc/types"
-	"decred.org/dcrwallet/wallet/txauthor"
-	"decred.org/dcrwallet/wallet/txrules"
+	"decred.org/dcrwallet/v2/rpc/jsonrpc/types"
+	"decred.org/dcrwallet/v2/wallet/txauthor"
+	"decred.org/dcrwallet/v2/wallet/txrules"
 	"github.com/decred/dcrd/chaincfg/chainhash"
 	"github.com/decred/dcrd/chaincfg/v3"
-	"github.com/decred/dcrd/dcrutil/v3"
-	"github.com/decred/dcrd/txscript/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
+	"github.com/decred/dcrd/txscript/v4"
 	"github.com/decred/dcrd/wire"
 	"github.com/jessevdk/go-flags"
 	"github.com/jrick/wsrpc/v2"
@@ -314,7 +314,7 @@ func sweep(ctx context.Context) error {
 	}
 
 	// Open RPC client.
-	rpcCertificate, err := ioutil.ReadFile(opts.RPCCertificateFile)
+	rpcCertificate, err := os.ReadFile(opts.RPCCertificateFile)
 	if err != nil {
 		return errContext(err, "failed to read RPC certificate")
 	}

@@ -52,6 +52,8 @@ service WalletService {
 	rpc NextAccount (NextAccountRequest) returns (NextAccountResponse);
 	rpc NextAddress (NextAddressRequest) returns (NextAddressResponse);
 	rpc ImportPrivateKey (ImportPrivateKeyRequest) returns (ImportPrivateKeyResponse);
+	rpc ImportExtendedPublicKey (ImportExtendedPublicKeyRequest) returns (ImportExtendedPublicKeyResponse);
+	rpc ImportVotingAccountFromSeed (ImportVotingAccountFromSeedRequest) returns (ImportVotingAccountFromSeedResponse);
 	rpc ImportScript(ImportScriptRequest) returns (ImportScriptResponse);
 	rpc FundTransaction (FundTransactionRequest) returns (FundTransactionResponse);
 	rpc UnspentOutputs (UnspentOutputsRequest) returns (stream UnspentOutputResponse);
@@ -62,6 +64,7 @@ service WalletService {
 	rpc PublishTransaction (PublishTransactionRequest) returns (PublishTransactionResponse);
 	rpc PublishUnminedTransactions (PublishUnminedTransactionsRequest) returns (PublishUnminedTransactionsResponse);
 	rpc PurchaseTickets(PurchaseTicketsRequest) returns (PurchaseTicketsResponse);
+	rpc RevokeTicket(RevokeTicketRequest) returns (RevokeTicketResponse);
 	rpc RevokeTickets(RevokeTicketsRequest) returns (RevokeTicketsResponse);
 	rpc LoadActiveDataFilters(LoadActiveDataFiltersRequest) returns (LoadActiveDataFiltersResponse);
 	rpc SignMessage (SignMessageRequest) returns (SignMessageResponse);
@@ -84,6 +87,7 @@ service WalletService {
 	rpc ProcessUnmanagedTickets (ProcessUnmanagedTicketsRequest) returns (ProcessUnmanagedTicketsResponse);
 	rpc SetVspdVoteChoices (SetVspdVoteChoicesRequest) returns (SetVspdVoteChoicesResponse);
 	rpc GetTrackedVSPTickets (GetTrackedVSPTicketsRequest) returns (GetTrackedVSPTicketsResponse);
+	rpc DiscoverUsage (DiscoverUsageRequest) returns (DiscoverUsageResponse);
 }
 
 service WalletLoaderService {
@@ -278,6 +282,29 @@ message ImportPrivateKeyRequest {
 	int32 scan_from = 5;
 }
 message ImportPrivateKeyResponse {
+}
+
+message ImportExtendedPublicKeyRequest {
+	string xpub = 1;
+	string account_name = 2;
+	bool rescan = 3;
+	int32 scan_from = 4;
+}
+message ImportExtendedPublicKeyResponse {
+}
+
+message ImportVotingAccountFromSeedRequest {
+	bytes seed = 1;
+	string name = 2;
+	bytes passphrase = 3;
+	bool rescan = 4;
+	int32 scan_from = 5;
+	bool discover_usage = 6;
+	int32 discover_from = 7;
+	int32 discover_gap_limit = 8;
+}
+message ImportVotingAccountFromSeedResponse {
+	uint32 account = 1;
 }
 
 message ImportScriptRequest {
@@ -603,6 +630,11 @@ message PurchaseTicketsResponse {
 	repeated bytes tickets = 2;
 	bytes split_tx = 3;
 }
+
+message RevokeTicketRequest {
+	bytes ticket_hash = 1;
+}
+message RevokeTicketResponse {}
 
 message RevokeTicketsRequest {
 	bytes passphrase = 1;
@@ -1047,6 +1079,8 @@ message DecodedTransaction {
 			STAKE_SUB_CHANGE = 9;
 			PUB_KEY_ALT = 10;
 			PUB_KEY_HASH_ALT = 11;
+			TGEN = 12;
+			TADD = 13;
 		}
 		ScriptClass script_class = 7;
 		repeated string addresses = 8;
@@ -1093,6 +1127,8 @@ message ValidateAddressResponse {
 		StakeSubChangeTy = 9;
 		PubkeyAltTy = 10;
 		PubkeyHashAltTy = 11;
+		TreasuryGenTy = 12;
+		TreasuryAddTy = 13;
 	}
 	ScriptType script_type = 8;
 	bytes pay_to_addr_script = 9;
@@ -1279,6 +1315,7 @@ message GetVSPTicketsByFeeStatusRequest {
 		VSP_FEE_PROCESS_STARTED = 0;
 		VSP_FEE_PROCESS_PAID = 1;
 		VSP_FEE_PROCESS_ERRORED = 2;
+		VSP_FEE_PROCESS_CONFIRMED = 3;
 	}
 	FeeStatus fee_status = 3;
 }
@@ -1332,3 +1369,11 @@ message GetTrackedVSPTicketsResponse {
 
 	repeated VSP vsps = 1;
 }
+
+message DiscoverUsageRequest {
+	bool discover_accounts = 1;
+	uint32 gap_limit = 2;
+	bytes starting_block_hash = 3;
+}
+
+message DiscoverUsageResponse {}

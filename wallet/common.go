@@ -8,7 +8,8 @@ import (
 	"time"
 
 	"github.com/decred/dcrd/chaincfg/chainhash"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"github.com/decred/dcrd/dcrutil/v4"
+	"github.com/decred/dcrd/txscript/v4/stdaddr"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -81,7 +82,7 @@ type P2SHMultiSigOutput struct {
 	OutputAmount    dcrutil.Amount
 	ContainingBlock BlockIdentity
 
-	P2SHAddress  *dcrutil.AddressScriptHash
+	P2SHAddress  *stdaddr.AddressScriptHashV0
 	RedeemScript []byte
 	M, N         uint8           // M of N signatures required to redeem
 	Redeemer     *OutputRedeemer // nil unless spent

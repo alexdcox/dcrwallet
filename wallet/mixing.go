@@ -11,15 +11,15 @@ import (
 	"net"
 	"time"
 
-	"decred.org/cspp"
-	"decred.org/cspp/coinjoin"
-	"decred.org/dcrwallet/errors"
-	"decred.org/dcrwallet/wallet/txauthor"
-	"decred.org/dcrwallet/wallet/txrules"
-	"decred.org/dcrwallet/wallet/txsizes"
-	"decred.org/dcrwallet/wallet/udb"
-	"decred.org/dcrwallet/wallet/walletdb"
-	"github.com/decred/dcrd/dcrutil/v3"
+	"decred.org/cspp/v2"
+	"decred.org/cspp/v2/coinjoin"
+	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/wallet/txauthor"
+	"decred.org/dcrwallet/v2/wallet/txrules"
+	"decred.org/dcrwallet/v2/wallet/txsizes"
+	"decred.org/dcrwallet/v2/wallet/udb"
+	"decred.org/dcrwallet/v2/wallet/walletdb"
+	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/decred/dcrd/wire"
 	"github.com/decred/go-socks/socks"
 	"golang.org/x/sync/errgroup"
@@ -39,12 +39,16 @@ var splitPoints = [...]dcrutil.Amount{
 	1 << 18, // 000.00262144
 }
 
-var splitSems = [len(splitPoints)]chan struct{}{}
+type mixSemaphores struct {
+	splitSems [len(splitPoints)]chan struct{}
+}
 
-func init() {
-	for i := range splitSems {
-		splitSems[i] = make(chan struct{}, 10)
+func newMixSemaphores(n int) mixSemaphores {
+	var m mixSemaphores
+	for i := range m.splitSems {
+		m.splitSems[i] = make(chan struct{}, n)
 	}
+	return m
 }
 
 var (
@@ -64,8 +68,6 @@ func (w *Wallet) MixOutput(ctx context.Context, dialTLS DialFunc, csppserver str
 	if err != nil {
 		return errors.E(op, err)
 	}
-
-	defer w.holdUnlock().release()
 
 	w.lockedOutpointMu.Lock()
 	if _, exists := w.lockedOutpoints[outpoint{output.Hash, output.Index}]; exists {
@@ -171,8 +173,8 @@ SplitPoints:
 	select {
 	case <-ctx.Done():
 		return errors.E(op, ctx.Err())
-	case splitSems[i] <- struct{}{}:
-		defer func() { <-splitSems[i] }()
+	case w.mixSems.splitSems[i] <- struct{}{}:
+		defer func() { <-w.mixSems.splitSems[i] }()
 	default:
 		return errThrottledMixRequest
 	}
@@ -187,10 +189,7 @@ SplitPoints:
 		if err != nil {
 			return errors.E(op, err)
 		}
-		changeScript, version, err := addressScript(addr)
-		if err != nil {
-			return errors.E(op, err)
-		}
+		version, changeScript := addr.PaymentScript()
 		change = &wire.TxOut{
 			Value:    int64(changeValue),
 			PkScript: changeScript,
@@ -269,8 +268,6 @@ SplitPoints:
 // function may throttle how many of the outputs are mixed each call.
 func (w *Wallet) MixAccount(ctx context.Context, dialTLS DialFunc, csppserver string, changeAccount, mixAccount, mixBranch uint32) error {
 	const op errors.Op = "wallet.MixAccount"
-
-	defer w.holdUnlock().release()
 
 	_, tipHeight := w.MainChainTip(ctx)
 	w.lockedOutpointMu.Lock()

@@ -1,5 +1,5 @@
 // Copyright (c) 2013-2014 The btcsuite developers
-// Copyright (c) 2015-2017 The Decred developers
+// Copyright (c) 2015-2021 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -18,8 +18,8 @@ const semverAlphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrst
 // Constants defining the application version number.
 const (
 	Major = 1
-	Minor = 6
-	Patch = 3
+	Minor = 7
+	Patch = 1
 )
 
 // Integer is an integer encoding of the major.minor.patch version.
@@ -27,7 +27,7 @@ const Integer = 1000000*Major + 10000*Minor + 100*Patch
 
 // PreRelease contains the prerelease name of the application.  It is a variable
 // so it can be modified at link time (e.g.
-// `-ldflags "-X decred.org/dcrwallet/version.PreRelease=rc1"`).
+// `-ldflags "-X decred.org/dcrwallet/v2/version.PreRelease=rc1"`).
 // It must only contain characters from the semantic version alphabet.
 var PreRelease = "pre"
 
@@ -35,6 +35,12 @@ var PreRelease = "pre"
 // for official releases.  It must only contain characters from the semantic
 // version alphabet.
 var BuildMetadata = ""
+
+func init() {
+	if BuildMetadata == "" {
+		BuildMetadata = vcsCommitID()
+	}
+}
 
 // String returns the application version as a properly formed string per the
 // semantic versioning 2.0.0 spec (https://semver.org/).

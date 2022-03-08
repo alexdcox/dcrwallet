@@ -9,10 +9,9 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
 	"os"
 
-	"decred.org/dcrwallet/wallet/walletdb"
+	"decred.org/dcrwallet/v2/wallet/walletdb"
 	"github.com/decred/dcrd/chaincfg/v3"
 )
 
@@ -71,12 +70,12 @@ func createEmptyDB() error {
 // stake store and a teardown function.
 func cloneDB(cloneName string) (walletdb.DB, *Manager, *Store, *StakeStore, func(), error) {
 	ctx := context.Background()
-	file, err := ioutil.ReadFile(emptyDbPath)
+	file, err := os.ReadFile(emptyDbPath)
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("unexpected error: %v", err)
 	}
 
-	err = ioutil.WriteFile(cloneName, file, 0644)
+	err = os.WriteFile(cloneName, file, 0644)
 	if err != nil {
 		return nil, nil, nil, nil, nil, fmt.Errorf("unexpected error: %v", err)
 	}
