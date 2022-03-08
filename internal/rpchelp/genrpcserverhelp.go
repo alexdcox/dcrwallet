@@ -3,7 +3,8 @@
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
-//+build generate
+//go:build generate
+// +build generate
 
 package main
 
@@ -15,7 +16,7 @@ import (
 
 	"decred.org/dcrwallet/v2/internal/rpchelp"
 	"decred.org/dcrwallet/v2/rpc/jsonrpc/types"
-	"github.com/decred/dcrd/dcrjson/v3"
+	"github.com/decred/dcrd/dcrjson/v4"
 )
 
 func init() {

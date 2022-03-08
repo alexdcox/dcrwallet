@@ -3,7 +3,8 @@
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
-//+build !generate
+//go:build !generate
+// +build !generate
 
 package rpchelp
 
@@ -195,6 +196,40 @@ var helpDescsEnUS = map[string]string{
 	"getblockhash-index":     "The block height",
 	"getblockhash--result0":  "The main chain block hash",
 
+	// GetBlockHeaderCmd help.
+	"getblockheader--synopsis":   "Returns information about a block header given its hash.",
+	"getblockheader-hash":        "The hash of the block",
+	"getblockheader-verbose":     "Specifies the block header is returned as a JSON object instead of hex-encoded string",
+	"getblockheader--condition0": "verbose=false",
+	"getblockheader--condition1": "verbose=true",
+	"getblockheader--result0":    "The serialized block header.",
+
+	// GetBlockHeaderVerboseResult help.
+	"getblockheaderverboseresult-hash":              "The hash of the block (same as provided)",
+	"getblockheaderverboseresult-confirmations":     "The number of confirmations",
+	"getblockheaderverboseresult-height":            "The height of the block in the block chain",
+	"getblockheaderverboseresult-version":           "The block version",
+	"getblockheaderverboseresult-merkleroot":        "The merkle root of the regular transaction tree",
+	"getblockheaderverboseresult-time":              "The block time in seconds since 1 Jan 1970 GMT",
+	"getblockheaderverboseresult-mediantime":        "The median block time over the last 11 blocks",
+	"getblockheaderverboseresult-nonce":             "The block nonce",
+	"getblockheaderverboseresult-bits":              "The bits which represent the block difficulty",
+	"getblockheaderverboseresult-difficulty":        "The proof-of-work difficulty as a multiple of the minimum difficulty",
+	"getblockheaderverboseresult-chainwork":         "The total number of hashes expected to produce the chain up to the block in hex (not set in SPV mode)",
+	"getblockheaderverboseresult-previousblockhash": "The hash of the previous block",
+	"getblockheaderverboseresult-nextblockhash":     "The hash of the next block (only if there is one)",
+	"getblockheaderverboseresult-size":              "The size of the block in bytes",
+	"getblockheaderverboseresult-sbits":             "The stake difficulty in coins",
+	"getblockheaderverboseresult-poolsize":          "The size of the live ticket pool",
+	"getblockheaderverboseresult-revocations":       "The number of revocations in the block",
+	"getblockheaderverboseresult-freshstake":        "The number of new tickets in the block",
+	"getblockheaderverboseresult-voters":            "The number of votes in the block",
+	"getblockheaderverboseresult-finalstate":        "The final state value of the ticket pool",
+	"getblockheaderverboseresult-votebits":          "The vote bits",
+	"getblockheaderverboseresult-stakeroot":         "The merkle root of the stake transaction tree",
+	"getblockheaderverboseresult-extradata":         "Extra data field for the requested block",
+	"getblockheaderverboseresult-stakeversion":      "The stake version of the block",
+
 	// GetBlockCmd help.
 	"getblock--synopsis":   "Returns information about a block given its hash.",
 	"getblock-hash":        "The hash of the block",
@@ -298,6 +333,10 @@ var helpDescsEnUS = map[string]string{
 	"syncstatusresult-synced":               "Whether or not the wallet is fully caught up to the network.",
 	"syncstatusresult-initialblockdownload": "Best guess of whether this wallet is in the initial block download mode used to catch up the blockchain when it is far behind.",
 	"syncstatusresult-headersfetchprogress": "Estimated progress of the headers fetching stage of the current sync process.",
+
+	// GetCurrentNetCmd help.
+	"getcurrentnet--synopsis": "Get Decred network the wallet is connected to.",
+	"getcurrentnet--result0":  "The network identifier",
 
 	// GetInfoCmd help.
 	"getinfo--synopsis": "Returns a JSON object containing various state info.",
@@ -653,6 +692,10 @@ var helpDescsEnUS = map[string]string{
 	"purchaseticket-comment":            "Unused",
 	"purchaseticket-dontsigntx":         "Return unsigned split and ticket transactions instead of signing and publishing",
 
+	// ProcessUnmanagedTicket help.
+	"processunmanagedticket--synopsis":  "Processes tickets for vsp client based on ticket hash.",
+	"processunmanagedticket-tickethash": "The ticket hash of ticket to be processed by the vsp client.",
+
 	// RedeemMultiSigout help.
 	"redeemmultisigout--synopsis": "Takes the input and constructs a P2PKH paying to the specified address.",
 	"redeemmultisigout-address":   "Address to pay to.",
@@ -781,11 +824,13 @@ var helpDescsEnUS = map[string]string{
 	"settreasurypolicy--synopsis": "Set a voting policy for treasury spends by a particular key",
 	"settreasurypolicy-key":       "Treasury key to set policy for",
 	"settreasurypolicy-policy":    "Voting policy for a treasury key (invalid/abstain, yes, or no)",
+	"settreasurypolicy-ticket":    "Ticket hash to set a per-ticket treasury key policy",
 
 	// SetTSpendPolicyCmd help.
 	"settspendpolicy--synopsis": "Set a voting policy for a treasury spend transaction",
 	"settspendpolicy-hash":      "Hash of treasury spend transaction to set policy for",
 	"settspendpolicy-policy":    "Voting policy for a tspend transaction (invalid/abstain, yes, or no)",
+	"settspendpolicy-ticket":    "Ticket hash to set a per-ticket tspend approval policy",
 
 	// SetTxFeeCmd help.
 	"settxfee--synopsis": "Modify the fee per kB of the serialized tx size used each time more fee is required for an authored transaction.",
@@ -874,6 +919,7 @@ var helpDescsEnUS = map[string]string{
 	"ticketinforesult-vote":          "Transaction hash of vote which spends the ticket",
 	"ticketinforesult-revocation":    "Transaction hash of revocation which spends the ticket",
 	"ticketinforesult-choices":       "Vote preferences set for the ticket",
+	"ticketinforesult-vsphost":       "VSP Host associated with the ticket (if any)",
 
 	// TicketsForAddressCmd help.
 	"ticketsforaddress--synopsis": "Request all the tickets for an address.",
@@ -889,6 +935,7 @@ var helpDescsEnUS = map[string]string{
 	// TreasuryPolicyCmd help.
 	"treasurypolicy--synopsis":   "Return voting policies for treasury spend transactions by key",
 	"treasurypolicy-key":         "Return the policy for a particular key",
+	"treasurypolicy-ticket":      "Return policies used by a specific ticket hash",
 	"treasurypolicy--condition0": "no key provided",
 	"treasurypolicy--condition1": "key specified",
 	"treasurypolicy--result0":    "Array of all non-abstaining voting policies",
@@ -896,10 +943,12 @@ var helpDescsEnUS = map[string]string{
 
 	"treasurypolicyresult-key":    "Treasury key associated with a policy",
 	"treasurypolicyresult-policy": "Voting policy description (abstain, yes, or no)",
+	"treasurypolicyresult-ticket": "Ticket hash of a per-ticket treasury key approval policy",
 
 	// TSpendPolicyCmd help.
 	"tspendpolicy--synopsis":   "Return voting policies for treasury spend transactions",
 	"tspendpolicy-hash":        "Return the policy for a particular tspend hash",
+	"tspendpolicy-ticket":      "Return policies used by a specific ticket hash",
 	"tspendpolicy--condition0": "no tspend hash provided",
 	"tspendpolicy--condition1": "tspend hash specified",
 	"tspendpolicy--result0":    "Array of all non-abstaining policies for known tspends",
@@ -907,6 +956,7 @@ var helpDescsEnUS = map[string]string{
 
 	"tspendpolicyresult-hash":   "Treasury spend transaction hash",
 	"tspendpolicyresult-policy": "Voting policy description (abstain, yes, or no)",
+	"tspendpolicyresult-ticket": "Ticket hash of a per-ticket tspend approval policy",
 
 	// UnlockAccountCmd help.
 	"unlockaccount--synopsis":  "Unlock an individually-encrypted account",
@@ -916,7 +966,7 @@ var helpDescsEnUS = map[string]string{
 	// ValidateAddressCmd help.
 	"validateaddress--synopsis": "Verify that an address is valid.\n" +
 		"Extra details are returned if the address is controlled by this wallet.\n" +
-		"The following fields are valid only when the address is controlled by this wallet (ismine=true): isscript, pubkey, iscompressed, account, addresses, hex, script, and sigsrequired.\n" +
+		"The following fields are valid only when the address is controlled by this wallet (ismine=true): pubkey, account, addresses, hex, and sigsrequired.\n" +
 		"The following fields are only valid when address has an associated public key: pubkey, iscompressed.\n" +
 		"The following fields are only valid when address is a pay-to-script-hash address: addresses, hex, and script.\n" +
 		"If the address is a multisig address controlled by this wallet, the multisig fields will be left unset if the wallet is locked since the redeem script cannot be decrypted.",
@@ -936,6 +986,10 @@ var helpDescsEnUS = map[string]string{
 	"validateaddressresult-hex":          "The redeem script ",
 	"validateaddressresult-script":       "The class of redeem script for a multisig address",
 	"validateaddressresult-sigsrequired": "The number of required signatures to redeem outputs to the multisig address",
+	"validateaddressresult-accountn": "The account number. This number plus 2 ^ 31 is the HD account the address was derived from. " +
+		"Not available for imported accounts. Only present for BIP0044 derived addresses.",
+	"validateaddressresult-branch": "The HD branch. Only present for BIP0044 derived addresses.",
+	"validateaddressresult-index":  "The HD index. Only present for BIP0044 derived addresses.",
 
 	// ValidatePreDCP0005CFCmd help
 	"validatepredcp0005cf--synopsis": "Validate whether all stored cfilters from before DCP0005 activation are correct according to the expected hardcoded hash",
@@ -963,6 +1017,7 @@ var helpDescsEnUS = map[string]string{
 	// WalletInfoCmd help.
 	"walletinfo--synopsis":              "Returns global information about the wallet",
 	"walletinforesult-daemonconnected":  "Whether or not the wallet is currently connected to the daemon RPC",
+	"walletinforesult-spv":              "Whether or not wallet is syncing in SPV mode",
 	"walletinforesult-unlocked":         "Whether or not the wallet is unlocked",
 	"walletinforesult-cointype":         "Active coin type. Not available for watching-only wallets.",
 	"walletinforesult-txfee":            "Transaction fee per kB of the serialized tx size in coins",

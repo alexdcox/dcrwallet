@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -54,7 +53,8 @@ func createWallet(ctx context.Context, cfg *config) error {
 	}
 	loader := loader.NewLoader(activeNet.Params, dbDir, stakeOptions,
 		cfg.GapLimit, cfg.AllowHighFees, cfg.RelayFee.Amount,
-		cfg.AccountGapLimit, cfg.DisableCoinTypeUpgrades, cfg.ManualTickets)
+		cfg.AccountGapLimit, cfg.DisableCoinTypeUpgrades, cfg.ManualTickets,
+		cfg.MixSplitLimit)
 
 	var privPass, pubPass, seed []byte
 	var imported bool
@@ -167,7 +167,7 @@ func createSimulationWallet(ctx context.Context, cfg *config) error {
 	// Write the seed to disk, so that we can restore it later
 	// if need be, for testing purposes.
 	seedStr := walletseed.EncodeMnemonic(seed)
-	err = ioutil.WriteFile(filepath.Join(netDir, "seed"), []byte(seedStr), 0644)
+	err = os.WriteFile(filepath.Join(netDir, "seed"), []byte(seedStr), 0644)
 	if err != nil {
 		return err
 	}
@@ -195,17 +195,14 @@ func createSimulationWallet(ctx context.Context, cfg *config) error {
 
 // promptHDPublicKey prompts the user for an extended public key.
 func promptHDPublicKey(reader *bufio.Reader) (string, error) {
-	for {
-		fmt.Print("Enter HD wallet public key: ")
-		keyString, err := reader.ReadString('\n')
-		if err != nil {
-			return "", err
-		}
-
-		keyStringTrimmed := strings.TrimSpace(keyString)
-
-		return keyStringTrimmed, nil
+	fmt.Print("Enter HD wallet public key: ")
+	keyString, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
 	}
+
+	keyStringTrimmed := strings.TrimSpace(keyString)
+	return keyStringTrimmed, nil
 }
 
 // createWatchingOnlyWallet creates a watching only wallet using the passed

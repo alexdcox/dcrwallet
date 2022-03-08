@@ -1,4 +1,4 @@
-// Copyright (c) 2017 The Decred developers
+// Copyright (c) 2017-2021 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -18,7 +18,7 @@ import (
 	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/decred/dcrd/gcs/v3/blockcf2"
 	"github.com/decred/dcrd/hdkeychain/v3"
-	"github.com/decred/dcrd/txscript/v4"
+	"github.com/decred/dcrd/txscript/v4/stdscript"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -183,10 +183,29 @@ const (
 	// transactions by transaction hash, rather than by pi key.
 	tspendHashPolicyVersion = 22
 
+	// vspHostVersion is the 23nd version of the database.  It adds a
+	// vsp host ane vsp pubkey buckets to the db.
+	vspHostVersion = 23
+
+	// vspTreasuryPoliciesVersion is the 24th version of the database.  It
+	// adds top-level buckets for recording the voting policies
+	// treasury-spending transactions for specific customer's tickets served
+	// by a VSP.
+	vspTreasuryPoliciesVersion = 24
+
+	// importVotingAccount is the 25th version of the database. This version
+	// indicates that importing a new account type has been enabled. This
+	// account facilitates voting using a special account where the private
+	// key from indexes of the internal branch are shared with a vsp. The
+	// new type is not recognized by previous wallet versions. This version
+	// only updates the db version number so that previous versions will
+	// error on startup.
+	importVotingAccountVersion = 25
+
 	// DBVersion is the latest version of the database that is understood by the
 	// program.  Databases with recorded versions higher than this will fail to
 	// open (meaning any upgrades prevent reverting to older software).
-	DBVersion = tspendHashPolicyVersion
+	DBVersion = importVotingAccountVersion
 )
 
 // upgrades maps between old database versions and the upgrade function to
@@ -214,6 +233,9 @@ var upgrades = [...]func(walletdb.ReadWriteTx, []byte, *chaincfg.Params) error{
 	vspBucketVersion - 1:                  vspBucketUpgrade,
 	vspStatusVersion - 1:                  vspStatusUpgrade,
 	tspendHashPolicyVersion - 1:           tspendHashPolicyUpgrade,
+	vspHostVersion - 1:                    vspHostVersionUpgrade,
+	vspTreasuryPoliciesVersion - 1:        vspTreasuryPoliciesUpgrade,
+	importVotingAccountVersion - 1:        importVotingAccountUpgrade,
 }
 
 func lastUsedAddressIndexUpgrade(tx walletdb.ReadWriteTx, publicPassphrase []byte, params *chaincfg.Params) error {
@@ -752,7 +774,8 @@ func hasExpiryFixedUpgrade(tx walletdb.ReadWriteTx, publicPassphrase []byte, par
 			// OP_SSTXCHANGE output.
 			out := record.MsgTx.TxOut[extractRawCreditIndex(k)]
 			if stake.IsSStx(&record.MsgTx) &&
-				txscript.GetScriptClass(out.Version, out.PkScript, true /* Yes treasury */) == txscript.StakeSubChangeTy {
+				(stdscript.IsStakeChangePubKeyHashScript(out.Version, out.PkScript) ||
+					stdscript.IsStakeChangeScriptHashScript(out.Version, out.PkScript)) {
 				vCpy[8] |= 1 << 4
 			}
 
@@ -803,7 +826,8 @@ func hasExpiryFixedUpgrade(tx walletdb.ReadWriteTx, publicPassphrase []byte, par
 			}
 			out := record.MsgTx.TxOut[idx]
 			if stake.IsSStx(&record.MsgTx) &&
-				txscript.GetScriptClass(out.Version, out.PkScript, true /* Yes treasury */) == txscript.StakeSubChangeTy {
+				(stdscript.IsStakeChangePubKeyHashScript(out.Version, out.PkScript) ||
+					stdscript.IsStakeChangeScriptHashScript(out.Version, out.PkScript)) {
 				vCpy[8] |= 1 << 4
 			}
 
@@ -1528,6 +1552,121 @@ func tspendHashPolicyUpgrade(tx walletdb.ReadWriteTx, publicPassphrase []byte, p
 	_, err = tx.CreateTopLevelBucket(tspendPolicyBucketKey)
 	if err != nil {
 		return errors.E(errors.IO, err)
+	}
+
+	// Write the new database version.
+	return unifiedDBMetadata{}.putVersion(metadataBucket, newVersion)
+}
+
+func vspHostVersionUpgrade(tx walletdb.ReadWriteTx, publicPassphrase []byte, params *chaincfg.Params) error {
+	const oldVersion = 22
+	const newVersion = 23
+
+	metadataBucket := tx.ReadWriteBucket(unifiedDBMetadata{}.rootBucketKey())
+	// Assert that this function is only called on version 20 databases.
+	dbVersion, err := unifiedDBMetadata{}.getVersion(metadataBucket)
+	if err != nil {
+		return err
+	}
+	if dbVersion != oldVersion {
+		return errors.E(errors.Invalid, "vspStatusUpgrade inappropriately called")
+	}
+
+	// Create new vsp host bucket
+	_, err = tx.CreateTopLevelBucket(vspHostBucketKey)
+	if err != nil {
+		return errors.E(errors.IO, err)
+	}
+	// Create new vsp pubkey bucket
+	_, err = tx.CreateTopLevelBucket(vspPubKeyBucketKey)
+	if err != nil {
+		return errors.E(errors.IO, err)
+	}
+
+	// Create first entry into vsp host bucket of an 0 length host, keyed
+	// at 0.
+	bucket := tx.ReadWriteBucket(vspHostBucketKey)
+	k := make([]byte, 4)
+	byteOrder.PutUint32(k, 0)
+	buf := make([]byte, 4)
+	byteOrder.PutUint32(buf[0:4], uint32(0))
+	err = bucket.Put(k, make([]byte, 4))
+	if err != nil {
+		return errors.E(errors.IO, err)
+	}
+
+	// Enter current index of vsp host as 0
+	vspIndexBytes := make([]byte, 4)
+	byteOrder.PutUint32(vspIndexBytes, 0)
+	err = bucket.Put(rootVSPHostIndex, vspIndexBytes)
+	if err != nil {
+		return errors.E(errors.IO, err)
+	}
+
+	// Set all existing tickets in the vspBucketKey to have the vsp host entry
+	// of 0.  These will be noticed on the next time the process managed tickets
+	// is completed and all entried will be updated to their proper values
+	// once they have been confirmed at a particular VSP.
+	ticketBucket := tx.ReadWriteBucket(vspBucketKey)
+	tix := make(map[string][]byte)
+	cursor := ticketBucket.ReadCursor()
+	vspHostZero := make([]byte, 4)
+	byteOrder.PutUint32(vspHostZero, uint32(0))
+	for k, v := cursor.First(); v != nil; k, v = cursor.Next() {
+		tix[string(k)] = append(v[:len(v):len(v)], vspHostZero...)
+	}
+	cursor.Close()
+	for k, v := range tix {
+		err := ticketBucket.Put([]byte(k), v)
+		if err != nil {
+			return errors.E(errors.IO, err)
+		}
+	}
+	// Write the new database version.
+	return unifiedDBMetadata{}.putVersion(metadataBucket, newVersion)
+}
+
+func vspTreasuryPoliciesUpgrade(tx walletdb.ReadWriteTx, publicPassphrase []byte, params *chaincfg.Params) error {
+	const oldVersion = 23
+	const newVersion = 24
+
+	metadataBucket := tx.ReadWriteBucket(unifiedDBMetadata{}.rootBucketKey())
+
+	// Assert that this function is only called on version 22 databases.
+	dbVersion, err := unifiedDBMetadata{}.getVersion(metadataBucket)
+	if err != nil {
+		return err
+	}
+	if dbVersion != oldVersion {
+		return errors.E(errors.Invalid, "vspTreasuryPoliciesUpgrade inappropriately called")
+	}
+
+	_, err = tx.CreateTopLevelBucket(vspTreasuryPolicyBucketKey)
+	if err != nil {
+		return errors.E(errors.IO, err)
+	}
+	_, err = tx.CreateTopLevelBucket(vspTspendPolicyBucketKey)
+	if err != nil {
+		return errors.E(errors.IO, err)
+	}
+
+	// Write the new database version.
+	return unifiedDBMetadata{}.putVersion(metadataBucket, newVersion)
+}
+
+func importVotingAccountUpgrade(tx walletdb.ReadWriteTx, publicPassphrase []byte, params *chaincfg.Params) error {
+	const oldVersion = 24
+	const newVersion = 25
+
+	metadataBucket := tx.ReadWriteBucket(unifiedDBMetadata{}.rootBucketKey())
+
+	// Assert that this function is only called on version 24 databases.
+	dbVersion, err := unifiedDBMetadata{}.getVersion(metadataBucket)
+	if err != nil {
+		return err
+	}
+	if dbVersion != oldVersion {
+		return errors.E(errors.Invalid, "importVotingAccountUpgrade inappropriately called")
 	}
 
 	// Write the new database version.

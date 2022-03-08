@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -165,7 +164,8 @@ func run(ctx context.Context) error {
 	}
 	loader := ldr.NewLoader(activeNet.Params, dbDir, stakeOptions,
 		cfg.GapLimit, cfg.AllowHighFees, cfg.RelayFee.Amount,
-		cfg.AccountGapLimit, cfg.DisableCoinTypeUpgrades, cfg.ManualTickets)
+		cfg.AccountGapLimit, cfg.DisableCoinTypeUpgrades, cfg.ManualTickets,
+		cfg.MixSplitLimit)
 	loader.DialCSPPServer = cfg.dialCSPPServer
 
 	// Stop any services started by the loader after the shutdown procedure is
@@ -246,7 +246,7 @@ func run(ctx context.Context) error {
 			passphrase = startPromptPass(ctx, w)
 		}
 
-		if cfg.EnableTicketBuyer && cfg.VSPOpts.URL != "" {
+		if cfg.VSPOpts.URL != "" {
 			changeAccountName := cfg.ChangeAccount
 			if changeAccountName == "" && cfg.CSPPServer == "" {
 				log.Warnf("Change account not set, using "+
@@ -420,7 +420,7 @@ func run(ctx context.Context) error {
 		}
 
 		loader.RunAfterLoad(func(w *wallet.Wallet) {
-			if cfg.VSPOpts.Sync {
+			if vspClient != nil && cfg.VSPOpts.Sync {
 				vspClient.ProcessManagedTickets(ctx, vspClient.Policy)
 			}
 
@@ -575,7 +575,7 @@ func readCAFile() []byte {
 	var certs []byte
 	if !cfg.DisableClientTLS {
 		var err error
-		certs, err = ioutil.ReadFile(cfg.CAFile.Value)
+		certs, err = os.ReadFile(cfg.CAFile.Value)
 		if err != nil {
 			log.Warnf("Cannot open CA file: %v", err)
 			// If there's an error reading the CA file, continue

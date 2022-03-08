@@ -22,6 +22,7 @@ import (
 	"github.com/decred/dcrd/dcrutil/v4"
 	"github.com/decred/dcrd/txscript/v4"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
+	"github.com/decred/dcrd/txscript/v4/stdscript"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -117,12 +118,7 @@ func parseTicket(ticket *wire.MsgTx, params *chaincfg.Params) (
 	if !stake.IsSStx(ticket) {
 		return fail(fmt.Errorf("%v is not a ticket", ticket))
 	}
-	const scriptVersion = 0
-	_, addrs, _, err := txscript.ExtractPkScriptAddrs(scriptVersion,
-		ticket.TxOut[0].PkScript, params, true) // Yes treasury
-	if err != nil {
-		return fail(fmt.Errorf("cannot parse voting addr: %w", err))
-	}
+	_, addrs := stdscript.ExtractAddrs(ticket.TxOut[0].Version, ticket.TxOut[0].PkScript, params)
 	if len(addrs) != 1 {
 		return fail(fmt.Errorf("cannot parse voting addr"))
 	}
@@ -184,7 +180,7 @@ func (fp *feePayment) remove(reason string) {
 
 // feePayment returns an existing managed fee payment, or creates and begins
 // processing a fee payment for a ticket.
-func (c *Client) feePayment(ticketHash *chainhash.Hash, policy Policy) (fp *feePayment) {
+func (c *Client) feePayment(ticketHash *chainhash.Hash, policy Policy, paidConfirmed bool) (fp *feePayment) {
 	c.mu.Lock()
 	fp = c.jobs[*ticketHash]
 	c.mu.Unlock()
@@ -261,8 +257,6 @@ func (c *Client) feePayment(ticketHash *chainhash.Hash, policy Policy) (fp *feeP
 		log.Errorf("no voting key for ticket %v: %v", ticketHash, err)
 		return nil
 	}
-
-	fp.state = unprocessed // XXX fee created, but perhaps not submitted with vsp.
 	feeHash, err := w.VSPFeeHashForTicket(ctx, ticketHash)
 	if err != nil {
 		// caller must schedule next method, as paying the fee may
@@ -283,8 +277,19 @@ func (c *Client) feePayment(ticketHash *chainhash.Hash, policy Policy) (fp *feeP
 	}
 
 	fp.feeTx = fee
-	fp.fee = -1 // XXX fee amount (not needed anymore?)
+	fp.feeHash = feeHash
 
+	// If database has been updated to paid or confirmed status, we can forgo
+	// this step.
+	if !paidConfirmed {
+		err = w.UpdateVspTicketFeeToStarted(ctx, ticketHash, &feeHash, c.client.url, c.client.pub)
+		if err != nil {
+			return fp
+		}
+
+		fp.state = unprocessed // XXX fee created, but perhaps not submitted with vsp.
+		fp.fee = -1            // XXX fee amount (not needed anymore?)
+	}
 	return fp
 }
 
@@ -586,7 +591,7 @@ func (fp *feePayment) makeFeeTx(tx *wire.MsgTx) error {
 	if err != nil {
 		return err
 	}
-	err = w.UpdateVspTicketFeeToPaid(ctx, &fp.ticketHash, &feeHash)
+	err = w.UpdateVspTicketFeeToPaid(ctx, &fp.ticketHash, &feeHash, fp.client.url, fp.client.pub)
 	if err != nil {
 		return err
 	}
@@ -606,6 +611,8 @@ type ticketStatus struct {
 	FeeTxStatus     string            `json:"feetxstatus"`
 	FeeTxHash       string            `json:"feetxhash"`
 	VoteChoices     map[string]string `json:"votechoices"`
+	TSpendPolicy    map[string]string `json:"tspendpolicy"`
+	TreasuryPolicy  map[string]string `json:"treasurypolicy"`
 	Request         []byte            `json:"request"`
 }
 
@@ -657,7 +664,8 @@ func (c *Client) status(ctx context.Context, ticketHash *chainhash.Hash) (*ticke
 	return &resp, nil
 }
 
-func (c *Client) setVoteChoices(ctx context.Context, ticketHash *chainhash.Hash, choices []wallet.AgendaChoice) error {
+func (c *Client) setVoteChoices(ctx context.Context, ticketHash *chainhash.Hash,
+	choices []wallet.AgendaChoice, tspendPolicy map[string]string, treasuryPolicy map[string]string) error {
 	w := c.Wallet
 	params := w.ChainParams()
 
@@ -688,13 +696,17 @@ func (c *Client) setVoteChoices(ctx context.Context, ticketHash *chainhash.Hash,
 
 	var resp ticketStatus
 	requestBody, err := json.Marshal(&struct {
-		Timestamp   int64             `json:"timestamp"`
-		TicketHash  string            `json:"tickethash"`
-		VoteChoices map[string]string `json:"votechoices"`
+		Timestamp      int64             `json:"timestamp"`
+		TicketHash     string            `json:"tickethash"`
+		VoteChoices    map[string]string `json:"votechoices"`
+		TSpendPolicy   map[string]string `json:"tspendpolicy"`
+		TreasuryPolicy map[string]string `json:"treasurypolicy"`
 	}{
-		Timestamp:   time.Now().Unix(),
-		TicketHash:  ticketHash.String(),
-		VoteChoices: agendaChoices,
+		Timestamp:      time.Now().Unix(),
+		TicketHash:     ticketHash.String(),
+		VoteChoices:    agendaChoices,
+		TSpendPolicy:   tspendPolicy,
+		TreasuryPolicy: treasuryPolicy,
 	})
 	if err != nil {
 		return err
@@ -785,12 +797,16 @@ func (fp *feePayment) reconcilePayment() error {
 			if err != nil {
 				return err
 			}
-			err = w.UpdateVspTicketFeeToPaid(ctx, &fp.ticketHash, &feeHash)
+			err = w.UpdateVspTicketFeeToPaid(ctx, &fp.ticketHash, &feeHash, fp.client.url, fp.client.pub)
 			if err != nil {
 				return err
 			}
 			err = nil
 		case codeInvalidFeeTx, codeCannotBroadcastFee:
+			err := w.UpdateVspTicketFeeToErrored(ctx, &fp.ticketHash, fp.client.url, fp.client.pub)
+			if err != nil {
+				return err
+			}
 			// Attempt to create a new fee transaction
 			fp.mu.Lock()
 			fp.feeHash = chainhash.Hash{}
@@ -805,7 +821,7 @@ func (fp *feePayment) reconcilePayment() error {
 		return err
 	}
 
-	err = w.UpdateVspTicketFeeToPaid(ctx, &fp.ticketHash, &feeHash)
+	err = w.UpdateVspTicketFeeToPaid(ctx, &fp.ticketHash, &feeHash, fp.client.url, fp.client.pub)
 	if err != nil {
 		return err
 	}
@@ -873,17 +889,21 @@ func (fp *feePayment) submitPayment() (err error) {
 		Request   []byte `json:"request"`
 	}
 	requestBody, err := json.Marshal(&struct {
-		Timestamp   int64             `json:"timestamp"`
-		TicketHash  string            `json:"tickethash"`
-		FeeTx       json.Marshaler    `json:"feetx"`
-		VotingKey   string            `json:"votingkey"`
-		VoteChoices map[string]string `json:"votechoices"`
+		Timestamp      int64             `json:"timestamp"`
+		TicketHash     string            `json:"tickethash"`
+		FeeTx          json.Marshaler    `json:"feetx"`
+		VotingKey      string            `json:"votingkey"`
+		VoteChoices    map[string]string `json:"votechoices"`
+		TSpendPolicy   map[string]string `json:"tspendpolicy"`
+		TreasuryPolicy map[string]string `json:"treasurypolicy"`
 	}{
-		Timestamp:   time.Now().Unix(),
-		TicketHash:  fp.ticketHash.String(),
-		FeeTx:       txMarshaler(feeTx),
-		VotingKey:   votingKey,
-		VoteChoices: voteChoices,
+		Timestamp:      time.Now().Unix(),
+		TicketHash:     fp.ticketHash.String(),
+		FeeTx:          txMarshaler(feeTx),
+		VotingKey:      votingKey,
+		VoteChoices:    voteChoices,
+		TSpendPolicy:   w.TSpendPolicyForTicket(&fp.ticketHash),
+		TreasuryPolicy: w.TreasuryKeyPolicyForTicket(&fp.ticketHash),
 	})
 	if err != nil {
 		return err
@@ -956,6 +976,10 @@ func (fp *feePayment) confirmPayment() (err error) {
 		}
 		if confs >= 6 {
 			fp.remove("confirmed")
+			err = w.UpdateVspTicketFeeToConfirmed(ctx, &fp.ticketHash, &feeHash, fp.client.url, fp.client.pub)
+			if err != nil {
+				return err
+			}
 			return nil
 		}
 		fp.schedule("confirm payment", fp.confirmPayment)
@@ -976,6 +1000,10 @@ func (fp *feePayment) confirmPayment() (err error) {
 	case "confirmed":
 		fp.remove("confirmed by VSP")
 		// nothing scheduled
+		err = w.UpdateVspTicketFeeToConfirmed(ctx, &fp.ticketHash, &fp.feeHash, fp.client.url, fp.client.pub)
+		if err != nil {
+			return err
+		}
 		return nil
 	case "error":
 		log.Warnf("VSP failed to broadcast feetx for %v -- restarting payment",

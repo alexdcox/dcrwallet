@@ -10,13 +10,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/user"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"decred.org/dcrwallet/v2/errors"
@@ -39,6 +39,7 @@ const (
 	defaultLogLevel                = "info"
 	defaultLogDirname              = "logs"
 	defaultLogFilename             = "dcrwallet.log"
+	defaultLogSize                 = "10M"
 	defaultRPCMaxClients           = 10
 	defaultRPCMaxWebsockets        = 25
 	defaultAuthType                = "basic"
@@ -54,9 +55,11 @@ const (
 	defaultAccountGapLimit         = wallet.DefaultAccountGapLimit
 	defaultDisableCoinTypeUpgrades = false
 	defaultCircuitLimit            = 32
+	defaultMixSplitLimit           = 10
 
 	// ticket buyer options
 	defaultBalanceToMaintainAbsolute = 0
+	defaultTicketbuyerLimit          = 1
 
 	walletDbName = "wallet.db"
 )
@@ -84,6 +87,7 @@ type config struct {
 	NoInitialLoad      bool                    `long:"noinitialload" description:"Defer wallet creation/opening on startup and enable loading wallets over RPC"`
 	DebugLevel         string                  `short:"d" long:"debuglevel" description:"Logging level {trace, debug, info, warn, error, critical}"`
 	LogDir             *cfgutil.ExplicitString `long:"logdir" description:"Directory to log output."`
+	LogSize            string                  `long:"logsize" description:"Maximum size of log file before it is rotated"`
 	NoFileLogging      bool                    `long:"nofilelogging" description:"Disable file logging"`
 	Profile            []string                `long:"profile" description:"Enable HTTP profiling this interface/port"`
 	MemProfile         string                  `long:"memprofile" description:"Write mem profile to the specified file"`
@@ -161,6 +165,7 @@ type config struct {
 	TicketSplitAccount string `long:"ticketsplitaccount" description:"Account to derive fresh addresses from for mixed ticket splits; uses mixedaccount if unset"`
 	ChangeAccount      string `long:"changeaccount" description:"Account used to derive unmixed CoinJoin outputs in CoinShuffle++ protocol"`
 	MixChange          bool   `long:"mixchange" description:"Use CoinShuffle++ to mix change account outputs into mix account"`
+	MixSplitLimit      int    `long:"mixsplitlimit" description:"Connection limit to CoinShuffle++ server per change amount"`
 
 	TBOpts ticketBuyerOptions `group:"Ticket Buyer Options" namespace:"ticketbuyer"`
 
@@ -171,7 +176,7 @@ type ticketBuyerOptions struct {
 	BalanceToMaintainAbsolute *cfgutil.AmountFlag  `long:"balancetomaintainabsolute" description:"Amount of funds to keep in wallet when purchasing tickets"`
 	VotingAddress             *cfgutil.AddressFlag `long:"votingaddress" description:"Purchase tickets with voting rights assigned to this address"`
 	votingAddress             stdaddr.StakeAddress
-	Limit                     uint   `long:"limit" description:"Buy no more than specified number of tickets per block (0 disables limit)"`
+	Limit                     uint   `long:"limit" description:"Buy no more than specified number of tickets per block"`
 	VotingAccount             string `long:"votingaccount" description:"Account used to derive addresses specifying voting rights"`
 }
 
@@ -334,6 +339,7 @@ func loadConfig(ctx context.Context) (*config, []string, error) {
 		ConfigFile:              cfgutil.NewExplicitString(defaultConfigFile),
 		AppDataDir:              cfgutil.NewExplicitString(defaultAppDataDir),
 		LogDir:                  cfgutil.NewExplicitString(defaultLogDir),
+		LogSize:                 defaultLogSize,
 		WalletPass:              wallet.InsecurePubPassphrase,
 		CAFile:                  cfgutil.NewExplicitString(""),
 		ClientCAFile:            cfgutil.NewExplicitString(defaultRPCClientCAFile),
@@ -359,15 +365,17 @@ func loadConfig(ctx context.Context) (*config, []string, error) {
 		AccountGapLimit:         defaultAccountGapLimit,
 		DisableCoinTypeUpgrades: defaultDisableCoinTypeUpgrades,
 		CircuitLimit:            defaultCircuitLimit,
+		MixSplitLimit:           defaultMixSplitLimit,
 
 		// Ticket Buyer Options
 		TBOpts: ticketBuyerOptions{
 			BalanceToMaintainAbsolute: cfgutil.NewAmountFlag(defaultBalanceToMaintainAbsolute),
 			VotingAddress:             cfgutil.NewAddressFlag(),
+			Limit:                     defaultTicketbuyerLimit,
 		},
 
 		VSPOpts: vspOptions{
-			MaxFee: cfgutil.NewAmountFlag(0.1e8),
+			MaxFee: cfgutil.NewAmountFlag(0.2e8),
 		},
 	}
 
@@ -474,9 +482,41 @@ func loadConfig(ctx context.Context) (*config, []string, error) {
 		cfg.LogDir.Value = filepath.Join(cfg.LogDir.Value,
 			activeNet.Params.Name)
 
+		var units int
+		for i, r := range cfg.LogSize {
+			if r < '0' || r > '9' {
+				units = i
+				break
+			}
+		}
+		invalidSize := func() error {
+			str := "%s: Invalid logsize: %v "
+			err := errors.Errorf(str, funcName, cfg.LogSize)
+			fmt.Fprintln(os.Stderr, err)
+			return err
+		}
+		if units == 0 {
+			return loadConfigError(invalidSize())
+		}
+		// Parsing a 32-bit number prevents 64-bit overflow after unit
+		// multiplication.
+		logsize, err := strconv.ParseInt(cfg.LogSize[:units], 10, 32)
+		if err != nil {
+			return loadConfigError(invalidSize())
+		}
+		switch cfg.LogSize[units:] {
+		case "k", "K", "KiB":
+		case "m", "M", "MiB":
+			logsize <<= 10
+		case "g", "G", "GiB":
+			logsize <<= 20
+		default:
+			return loadConfigError(invalidSize())
+		}
+
 		// Initialize log rotation.  After log rotation has been initialized, the
 		// logger variables may be used.
-		initLogRotator(filepath.Join(cfg.LogDir.Value, defaultLogFilename))
+		initLogRotator(filepath.Join(cfg.LogDir.Value, defaultLogFilename), logsize)
 	}
 
 	// Special show command to list supported subsystems and exit.
@@ -720,7 +760,7 @@ func loadConfig(ctx context.Context) (*config, []string, error) {
 	}
 	if cfg.CSPPServerCA != "" {
 		cfg.CSPPServerCA = cleanAndExpandPath(cfg.CSPPServerCA)
-		ca, err := ioutil.ReadFile(cfg.CSPPServerCA)
+		ca, err := os.ReadFile(cfg.CSPPServerCA)
 		if err != nil {
 			err := errors.Errorf("Cannot read CoinShuffle++ "+
 				"Certificate Authority file: %v", err)

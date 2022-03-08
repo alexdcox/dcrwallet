@@ -159,6 +159,7 @@ var (
 	rootTipBlock     = []byte("tip")
 	rootHaveCFilters = []byte("havecfilters")
 	rootLastTxsBlock = []byte("lasttxsblock")
+	rootVSPHostIndex = []byte("vsphostindex")
 )
 
 // The root bucket's mined balance k/v pair records the total balance for all
@@ -568,7 +569,7 @@ func readRawTxRecord(txHash *chainhash.Hash, v []byte, rec *TxRecord) error {
 	}
 
 	// Calculate the stake TxType from the MsgTx.
-	rec.TxType = stake.DetermineTxType(&rec.MsgTx, true) // Yes treasury
+	rec.TxType = stake.DetermineTxType(&rec.MsgTx, true, false)
 
 	return nil
 }

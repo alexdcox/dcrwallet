@@ -9,7 +9,7 @@
 package types
 
 import (
-	"github.com/decred/dcrd/dcrjson/v3"
+	"github.com/decred/dcrd/dcrjson/v4"
 	dcrdtypes "github.com/decred/dcrd/rpc/jsonrpc/types/v3"
 )
 
@@ -937,7 +937,8 @@ type SetDisapprovePercentCmd struct {
 // TreasuryPolicyCmd defines the parameters for the treasurypolicy JSON-RPC
 // command.
 type TreasuryPolicyCmd struct {
-	Key *string
+	Key    *string
+	Ticket *string
 }
 
 // SetTreasuryPolicyCmd defines the parameters for the settreasurypolicy
@@ -945,12 +946,24 @@ type TreasuryPolicyCmd struct {
 type SetTreasuryPolicyCmd struct {
 	Key    string
 	Policy string
+	Ticket *string
+}
+
+// NewSetTreasuryPolicyCmd returns a new instance which can be used to issue a settreasurypolicy
+// JSON-RPC command.
+func NewSetTreasuryPolicyCmd(key string, policy string, ticket *string) *SetTreasuryPolicyCmd {
+	return &SetTreasuryPolicyCmd{
+		Key:    key,
+		Policy: policy,
+		Ticket: ticket,
+	}
 }
 
 // TSpendPolicyCmd defines the parameters for the tspendpolicy JSON-RPC
 // command.
 type TSpendPolicyCmd struct {
-	Hash *string
+	Hash   *string
+	Ticket *string
 }
 
 // SetTSpendPolicyCmd defines the parameters for the settspendpolicy
@@ -958,6 +971,17 @@ type TSpendPolicyCmd struct {
 type SetTSpendPolicyCmd struct {
 	Hash   string
 	Policy string
+	Ticket *string
+}
+
+// NewSetTSpendPolicyCmd returns a new instance which can be used to issue a settspendpolicy
+// JSON-RPC command.
+func NewSetTSpendPolicyCmd(hash string, policy string, ticket *string) *SetTSpendPolicyCmd {
+	return &SetTSpendPolicyCmd{
+		Hash:   hash,
+		Policy: policy,
+		Ticket: ticket,
+	}
 }
 
 // SetTxFeeCmd defines the settxfee JSON-RPC command.
@@ -1199,6 +1223,11 @@ type AccountUnlockedCmd struct {
 	Account string
 }
 
+// ProcessUnmanagedTicket defines the processunmanagedticket JSON-RPC command arguments.
+type ProcessUnmanagedTicketCmd struct {
+	TicketHash *string
+}
+
 type registeredMethod struct {
 	method string
 	cmd    interface{}
@@ -1262,6 +1291,7 @@ func init() {
 		{"mixaccount", (*MixAccountCmd)(nil)},
 		{"mixoutput", (*MixOutputCmd)(nil)},
 		{"purchaseticket", (*PurchaseTicketCmd)(nil)},
+		{"processunmanagedticket", (*ProcessUnmanagedTicketCmd)(nil)},
 		{"redeemmultisigout", (*RedeemMultiSigOutCmd)(nil)},
 		{"redeemmultisigouts", (*RedeemMultiSigOutsCmd)(nil)},
 		{"renameaccount", (*RenameAccountCmd)(nil)},
@@ -1308,8 +1338,10 @@ func init() {
 		{"getbestblockhash", (*GetBestBlockHashCmd)(nil)},
 		{"getblockcount", (*GetBlockCountCmd)(nil)},
 		{"getblockhash", (*GetBlockHashCmd)(nil)},
+		{"getblockheader", (*GetBlockHeaderCmd)(nil)},
 		{"getblock", (*GetBlockCmd)(nil)},
 		{"getcfilterv2", (*GetCFilterV2Cmd)(nil)},
+		{"getcurrentnet", (*GetCurrentNetCmd)(nil)},
 		{"getinfo", (*GetInfoCmd)(nil)},
 		{"getpeerinfo", (*GetPeerInfoCmd)(nil)},
 		{"gettxout", (*GetTxOutCmd)(nil)},
@@ -1342,8 +1374,10 @@ type (
 	GetBestBlockHashCmd     dcrdtypes.GetBestBlockHashCmd
 	GetBlockCountCmd        dcrdtypes.GetBlockCountCmd
 	GetBlockHashCmd         dcrdtypes.GetBlockHashCmd
+	GetBlockHeaderCmd       dcrdtypes.GetBlockHeaderCmd
 	GetBlockCmd             dcrdtypes.GetBlockCmd
 	GetCFilterV2Cmd         dcrdtypes.GetCFilterV2Cmd
+	GetCurrentNetCmd        dcrdtypes.GetCurrentNetCmd
 	GetInfoCmd              dcrdtypes.GetInfoCmd
 	GetPeerInfoCmd          dcrdtypes.GetPeerInfoCmd
 	GetTxOutCmd             dcrdtypes.GetTxOutCmd

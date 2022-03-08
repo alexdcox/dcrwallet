@@ -12,7 +12,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/decred/dcrd/dcrjson/v3"
+	"github.com/decred/dcrd/dcrjson/v4"
 	dcrdtypes "github.com/decred/dcrd/rpc/jsonrpc/types/v3"
 )
 
@@ -977,6 +977,66 @@ func TestWalletSvrCmds(t *testing.T) {
 			marshalled: `{"jsonrpc":"1.0","method":"sendtotreasury","params":[0.5],"id":1}`,
 			unmarshalled: &SendToTreasuryCmd{
 				Amount: 0.5,
+			},
+		},
+		{
+			name: "settspendpolicy",
+			newCmd: func() (interface{}, error) {
+				return dcrjson.NewCmd(Method("settspendpolicy"), "hash", "policy")
+			},
+			staticCmd: func() interface{} {
+				return NewSetTSpendPolicyCmd("hash", "policy", nil)
+			},
+			marshalled: `{"jsonrpc":"1.0","method":"settspendpolicy","params":["hash","policy"],"id":1}`,
+			unmarshalled: &SetTSpendPolicyCmd{
+				Hash:   "hash",
+				Policy: "policy",
+				Ticket: nil,
+			},
+		},
+		{
+			name: "settspendpolicy optional",
+			newCmd: func() (interface{}, error) {
+				return dcrjson.NewCmd(Method("settspendpolicy"), "hash", "policy", "ticket")
+			},
+			staticCmd: func() interface{} {
+				return NewSetTSpendPolicyCmd("hash", "policy", dcrjson.String("ticket"))
+			},
+			marshalled: `{"jsonrpc":"1.0","method":"settspendpolicy","params":["hash","policy","ticket"],"id":1}`,
+			unmarshalled: &SetTSpendPolicyCmd{
+				Hash:   "hash",
+				Policy: "policy",
+				Ticket: dcrjson.String("ticket"),
+			},
+		},
+		{
+			name: "settreasurypolicy",
+			newCmd: func() (interface{}, error) {
+				return dcrjson.NewCmd(Method("settreasurypolicy"), "key", "policy")
+			},
+			staticCmd: func() interface{} {
+				return NewSetTreasuryPolicyCmd("key", "policy", nil)
+			},
+			marshalled: `{"jsonrpc":"1.0","method":"settreasurypolicy","params":["key","policy"],"id":1}`,
+			unmarshalled: &SetTreasuryPolicyCmd{
+				Key:    "key",
+				Policy: "policy",
+				Ticket: nil,
+			},
+		},
+		{
+			name: "settreasurypolicy optional",
+			newCmd: func() (interface{}, error) {
+				return dcrjson.NewCmd(Method("settreasurypolicy"), "key", "policy", "ticket")
+			},
+			staticCmd: func() interface{} {
+				return NewSetTreasuryPolicyCmd("key", "policy", dcrjson.String("ticket"))
+			},
+			marshalled: `{"jsonrpc":"1.0","method":"settreasurypolicy","params":["key","policy","ticket"],"id":1}`,
+			unmarshalled: &SetTreasuryPolicyCmd{
+				Key:    "key",
+				Policy: "policy",
+				Ticket: dcrjson.String("ticket"),
 			},
 		},
 		{

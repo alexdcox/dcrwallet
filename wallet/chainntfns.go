@@ -1,5 +1,5 @@
 // Copyright (c) 2013-2015 The btcsuite developers
-// Copyright (c) 2015-2020 The Decred developers
+// Copyright (c) 2015-2021 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"time"
 
+	"decred.org/dcrwallet/v2/deployments"
 	"decred.org/dcrwallet/v2/errors"
 	"decred.org/dcrwallet/v2/wallet/txrules"
 	"decred.org/dcrwallet/v2/wallet/udb"
@@ -21,6 +22,7 @@ import (
 	gcs2 "github.com/decred/dcrd/gcs/v3"
 	"github.com/decred/dcrd/txscript/v4"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
+	"github.com/decred/dcrd/txscript/v4/stdscript"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -297,7 +299,7 @@ func (w *Wallet) evaluateStakePoolTicket(rec *udb.TxRecord, blockHeight int32, p
 		// height and the required amount from the pool.
 		feeNeeded := txrules.StakePoolTicketFee(dcrutil.Amount(
 			tx.TxOut[0].Value), fees, blockHeight, w.poolFees,
-			w.chainParams)
+			w.chainParams, false)
 		if commitAmt < feeNeeded {
 			log.Warnf("User %s submitted ticket %v which "+
 				"has less fees than are required to use this "+
@@ -447,8 +449,7 @@ func (w *Wallet) processTransactionRecord(ctx context.Context, dbtx walletdb.Rea
 		// Errors don't matter here.  If addrs is nil, the range below
 		// does nothing.
 		txOut := rec.MsgTx.TxOut[0]
-		_, addrs, _, _ := txscript.ExtractPkScriptAddrs(txOut.Version,
-			txOut.PkScript, w.chainParams, true) // Yes treasury
+		_, addrs := stdscript.ExtractAddrs(txOut.Version, txOut.PkScript, w.chainParams)
 		insert := false
 		for _, addr := range addrs {
 			switch addr := addr.(type) {
@@ -580,17 +581,12 @@ func (w *Wallet) processTransactionRecord(ctx context.Context, dbtx walletdb.Rea
 			prev := input.PreviousOutPoint
 			delete(w.lockedOutpoints, outpoint{prev.Hash, prev.Index})
 		}
+		// TODO: the prevout's actual pkScript version is needed.
+		if stdscript.IsMultiSigSigScript(scriptVersionAssumed, input.SignatureScript) {
+			rs := stdscript.MultiSigRedeemScriptFromScriptSigV0(input.SignatureScript)
 
-		if txscript.IsMultisigSigScript(input.SignatureScript) {
-			rs := txscript.MultisigRedeemScriptFromScriptSig(input.SignatureScript)
-
-			class, addrs, _, err := txscript.ExtractPkScriptAddrs(
-				0, rs, w.chainParams, true) // Yes treasury
-			if err != nil {
-				// Non-standard outputs are skipped.
-				continue
-			}
-			if class != txscript.MultiSigTy {
+			class, addrs := stdscript.ExtractAddrs(scriptVersionAssumed, rs, w.chainParams)
+			if class != stdscript.STMultiSig {
 				// This should never happen, but be paranoid.
 				continue
 			}
@@ -656,25 +652,14 @@ func (w *Wallet) processTransactionRecord(ctx context.Context, dbtx walletdb.Rea
 	// wallet key.  If so, mark the output as a credit and mark
 	// outpoints to watch.
 	for i, output := range rec.MsgTx.TxOut {
-		class, addrs, _, err := txscript.ExtractPkScriptAddrs(output.Version,
-			output.PkScript, w.chainParams, true) // Yes treasury
-		if err != nil {
+		class, addrs := stdscript.ExtractAddrs(output.Version, output.PkScript, w.chainParams)
+		if class == stdscript.STNonStandard {
 			// Non-standard outputs are skipped.
 			continue
 		}
-		isStakeType := class == txscript.StakeSubmissionTy ||
-			class == txscript.StakeSubChangeTy ||
-			class == txscript.StakeGenTy ||
-			class == txscript.StakeRevocationTy ||
-			class == txscript.TreasuryAddTy ||
-			class == txscript.TreasuryGenTy
+		subClass, isStakeType := txrules.StakeSubScriptType(class)
 		if isStakeType {
-			class, err = txscript.GetStakeOutSubclass(output.PkScript, true) // Yes treasury
-			if err != nil {
-				err = errors.E(op, errors.E(errors.Op("txscript.GetStakeOutSubclass"), err))
-				log.Error(err)
-				continue
-			}
+			class = subClass
 		}
 
 		isTicketCommit := rec.TxType == stake.TxTypeSStx && i%2 == 1
@@ -735,7 +720,7 @@ func (w *Wallet) processTransactionRecord(ctx context.Context, dbtx walletdb.Rea
 
 		// Handle P2SH addresses that are multisignature scripts
 		// with keys that we own.
-		if class == txscript.ScriptHashTy {
+		if class == stdscript.STScriptHash {
 			var expandedScript []byte
 			for _, addr := range addrs {
 				expandedScript, err = w.manager.RedeemScript(addrmgrNs, addr)
@@ -747,19 +732,11 @@ func (w *Wallet) processTransactionRecord(ctx context.Context, dbtx walletdb.Rea
 				}
 			}
 
-			// Otherwise, extract the actual addresses and
-			// see if any belong to us.
-			expClass, multisigAddrs, _, err := txscript.ExtractPkScriptAddrs(
-				0,
-				expandedScript,
-				w.chainParams,
-				true) // Yes treasury
-			if err != nil {
-				return nil, errors.E(op, errors.E(errors.Op("txscript.ExtractPkScriptAddrs"), err))
-			}
+			// Otherwise, extract the actual addresses and see if any are ours.
+			expClass, multisigAddrs := stdscript.ExtractAddrs(scriptVersionAssumed, expandedScript, w.chainParams)
 
 			// Skip non-multisig scripts.
-			if expClass != txscript.MultiSigTy {
+			if expClass != stdscript.STMultiSig {
 				continue
 			}
 
@@ -841,6 +818,11 @@ func (w *Wallet) VoteOnOwnedTickets(ctx context.Context, winningTicketHashes []*
 	if err != nil {
 		return errors.E(op, err)
 	}
+	dcp0010Active, err := deployments.DCP0010Active(ctx, blockHeight,
+		w.chainParams, n)
+	if err != nil {
+		return errors.E(op, err)
+	}
 
 	// TODO The behavior of this is not quite right if tons of blocks
 	// are coming in quickly, because the transaction store will end up
@@ -918,7 +900,7 @@ func (w *Wallet) VoteOnOwnedTickets(ctx context.Context, winningTicketHashes []*
 			// Dealwith consensus votes
 			vote, err := createUnsignedVote(ticketHash, ticketPurchase,
 				blockHeight, blockHash, ticketVoteBits, w.subsidyCache,
-				w.chainParams)
+				w.chainParams, dcp0010Active)
 			if err != nil {
 				log.Errorf("Failed to create vote transaction for ticket "+
 					"hash %v: %v", ticketHash, err)
@@ -939,7 +921,7 @@ func (w *Wallet) VoteOnOwnedTickets(ctx context.Context, winningTicketHashes []*
 				// Get policy for tspend, falling back to any
 				// policy for the Pi key.
 				tspendHash := v.TxHash()
-				tspendVote := w.TSpendPolicy(&tspendHash)
+				tspendVote := w.TSpendPolicy(&tspendHash, ticketHash)
 				if tspendVote == stake.TreasuryVoteInvalid {
 					continue
 				}

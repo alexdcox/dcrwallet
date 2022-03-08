@@ -1,5 +1,5 @@
 // Copyright (c) 2013-2016 The btcsuite developers
-// Copyright (c) 2015-2020 The Decred developers
+// Copyright (c) 2015-2021 The Decred developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -14,9 +14,11 @@ import (
 	"sort"
 	"time"
 
-	"decred.org/cspp"
-	"decred.org/cspp/coinjoin"
+	"decred.org/cspp/v2"
+	"decred.org/cspp/v2/coinjoin"
+	"decred.org/dcrwallet/v2/deployments"
 	"decred.org/dcrwallet/v2/errors"
+	"decred.org/dcrwallet/v2/rpc/client/dcrd"
 	"decred.org/dcrwallet/v2/wallet/txauthor"
 	"decred.org/dcrwallet/v2/wallet/txrules"
 	"decred.org/dcrwallet/v2/wallet/txsizes"
@@ -31,6 +33,7 @@ import (
 	"github.com/decred/dcrd/txscript/v4"
 	"github.com/decred/dcrd/txscript/v4/sign"
 	"github.com/decred/dcrd/txscript/v4/stdaddr"
+	"github.com/decred/dcrd/txscript/v4/stdscript"
 	"github.com/decred/dcrd/wire"
 )
 
@@ -232,12 +235,7 @@ func (w *Wallet) insertCreditsIntoTxMgr(op errors.Op, dbtx walletdb.ReadWriteTx,
 	// Check every output to determine whether it is controlled by a wallet
 	// key.  If so, mark the output as a credit.
 	for i, output := range msgTx.TxOut {
-		_, addrs, _, err := txscript.ExtractPkScriptAddrs(output.Version,
-			output.PkScript, w.chainParams, true) // Yes treasury
-		if err != nil {
-			// Non-standard outputs are skipped.
-			continue
-		}
+		_, addrs := stdscript.ExtractAddrs(output.Version, output.PkScript, w.chainParams)
 		for _, addr := range addrs {
 			ma, err := w.manager.Address(addrmgrNs, addr)
 			if err == nil {
@@ -603,7 +601,7 @@ func (w *Wallet) txToMultisigInternal(ctx context.Context, op errors.Op, dbtx wa
 	// Insert a multi-signature output, then insert this P2SH
 	// hash160 into the address manager and the transaction
 	// manager.
-	msScript, err := txscript.MultiSigScript(int(nRequired), pubkeys...)
+	msScript, err := stdscript.MultiSigScriptV0(int(nRequired), pubkeys...)
 	if err != nil {
 		return txToMultisigError(errors.E(op, err))
 	}
@@ -626,11 +624,12 @@ func (w *Wallet) txToMultisigInternal(ctx context.Context, op errors.Op, dbtx wa
 	}
 	msgtx.AddTxOut(txOut)
 
-	// Add change if we need it. The case in which
-	// totalInput == amount+feeEst is skipped because
-	// we don't need to add a change output in this
-	// case.
-	feeSize := txsizes.EstimateSerializeSize(scriptSizes, msgtx.TxOut, 0)
+	// Add change if we need it.
+	changeSize := 0
+	if totalInput > amount+feeEstForTx {
+		changeSize = txsizes.P2PKHPkScriptSize
+	}
+	feeSize := txsizes.EstimateSerializeSize(scriptSizes, msgtx.TxOut, changeSize)
 	feeEst := txrules.FeeForSerializeSize(w.RelayFee(), feeSize)
 
 	if totalInput < amount+feeEst {
@@ -698,7 +697,7 @@ func (w *Wallet) txToMultisigInternal(ctx context.Context, op errors.Op, dbtx wa
 func validateMsgTx(op errors.Op, tx *wire.MsgTx, prevScripts [][]byte) error {
 	for i, prevScript := range prevScripts {
 		vm, err := txscript.NewEngine(prevScript, tx, i,
-			sanityVerifyFlags, 0, nil)
+			sanityVerifyFlags, scriptVersionAssumed, nil)
 		if err != nil {
 			return errors.E(op, err)
 		}
@@ -1365,8 +1364,10 @@ func (w *Wallet) purchaseTickets(ctx context.Context, op errors.Op,
 	// do so now.
 	var vspFee dcrutil.Amount
 	if poolAddress != nil {
+		// poolAddress is only used with the legacy stakepool
+		const dcp0010Active = false
 		vspFee = txrules.StakePoolTicketFee(ticketPrice, ticketFee,
-			tipHeight, poolFees, w.ChainParams())
+			tipHeight, poolFees, w.ChainParams(), dcp0010Active)
 	}
 
 	// After tickets are created and published, watch for future
@@ -1410,8 +1411,22 @@ func (w *Wallet) purchaseTickets(ctx context.Context, op errors.Op,
 		if err != nil {
 			return nil, err
 		}
+		// In SPV mode, DCP0010 is assumed to have activated.  This
+		// results in a larger fee calculation for the purposes of UTXO
+		// selection.  In RPC mode the actual activation can be
+		// determined.
+		dcp0010Active := true
+		switch n := n.(type) {
+		case *dcrd.RPC:
+			dcp0010Active, err = deployments.DCP0010Active(ctx,
+				int32(tipHeight), w.chainParams, n)
+			if err != nil {
+				return nil, err
+			}
+		}
 		fee := txrules.StakePoolTicketFee(ticketPrice, ticketFee,
-			int32(tipHeight), feePrice, w.ChainParams())
+			int32(tipHeight), feePrice, w.chainParams,
+			dcp0010Active)
 
 		// Reserve outputs for number of buys.
 		vspFeeCredits = make([][]Input, 0, req.Count)
@@ -1739,16 +1754,6 @@ func (w *Wallet) purchaseTickets(ctx context.Context, op errors.Op,
 	if !req.DontSignTx && req.VSPFeePaymentProcess != nil {
 		unlockCredits = false
 		for i, ticketHash := range purchaseTicketsResponse.TicketHashes {
-			// set vsp fee as processing, so we can know it started to be
-			// processed.
-			rec := udb.VSPTicket{
-				FeeTxStatus: uint32(udb.VSPFeeProcessStarted),
-			}
-			err = w.UpdateVSPTicket(ctx, ticketHash, rec)
-			if err != nil {
-				return nil, err
-			}
-
 			feeTx := wire.NewMsgTx()
 			for j := range vspFeeCredits[i] {
 				in := &vspFeeCredits[i][j]
@@ -1757,12 +1762,6 @@ func (w *Wallet) purchaseTickets(ctx context.Context, op errors.Op,
 
 			err = req.VSPFeePaymentProcess(ctx, ticketHash, feeTx)
 			if err != nil {
-				log.Errorf("vsp ticket %v fee proccessment failed: %v", ticketHash, err)
-				rec.FeeTxStatus = uint32(udb.VSPFeeProcessErrored)
-				err = w.UpdateVSPTicket(ctx, ticketHash, rec)
-				if err != nil {
-					return nil, err
-				}
 				// unlock outpoints in case of error
 				for _, outpoint := range vspFeeCredits[i] {
 					w.UnlockOutpoint(&outpoint.OutPoint.Hash, outpoint.OutPoint.Index)
@@ -1874,31 +1873,30 @@ func (w *Wallet) findEligibleOutputs(dbtx walletdb.ReadTx, account uint32, minco
 		// manually included in transactions and sent (for example,
 		// using createrawtransaction, signrawtransaction, and
 		// sendrawtransaction).
-		class, addrs, _, err := txscript.ExtractPkScriptAddrs(
-			0, output.PkScript, w.chainParams, true) // Yes treasury
-		if err != nil || len(addrs) != 1 {
+		class, addrs := stdscript.ExtractAddrs(scriptVersionAssumed, output.PkScript, w.chainParams)
+		if len(addrs) != 1 {
 			continue
 		}
 
 		// Make sure everything we're trying to spend is actually mature.
 		switch class {
-		case txscript.StakeGenTy:
+		case stdscript.STStakeGenPubKeyHash, stdscript.STStakeGenScriptHash:
 			if !coinbaseMatured(w.chainParams, output.Height, currentHeight) {
 				continue
 			}
-		case txscript.StakeRevocationTy:
+		case stdscript.STStakeRevocationPubKeyHash, stdscript.STStakeRevocationScriptHash:
 			if !coinbaseMatured(w.chainParams, output.Height, currentHeight) {
 				continue
 			}
-		case txscript.TreasuryAddTy, txscript.TreasuryGenTy:
+		case stdscript.STTreasuryAdd, stdscript.STTreasuryGenPubKeyHash, stdscript.STTreasuryGenScriptHash:
 			if !coinbaseMatured(w.chainParams, output.Height, currentHeight) {
 				continue
 			}
-		case txscript.StakeSubChangeTy:
+		case stdscript.STStakeChangePubKeyHash, stdscript.STStakeChangeScriptHash:
 			if !ticketChangeMatured(w.chainParams, output.Height, currentHeight) {
 				continue
 			}
-		case txscript.PubKeyHashTy:
+		case stdscript.STPubKeyHashEcdsaSecp256k1:
 			if output.FromCoinBase {
 				if !coinbaseMatured(w.chainParams, output.Height, currentHeight) {
 					continue
@@ -1969,31 +1967,30 @@ func (w *Wallet) findEligibleOutputsAmount(dbtx walletdb.ReadTx, account uint32,
 		// manually included in transactions and sent (for example,
 		// using createrawtransaction, signrawtransaction, and
 		// sendrawtransaction).
-		class, addrs, _, err := txscript.ExtractPkScriptAddrs(
-			0, output.PkScript, w.chainParams, true) // Yes treasury
-		if err != nil || len(addrs) != 1 {
+		class, addrs := stdscript.ExtractAddrs(scriptVersionAssumed, output.PkScript, w.chainParams)
+		if len(addrs) != 1 {
 			continue
 		}
 
 		// Make sure everything we're trying to spend is actually mature.
 		switch class {
-		case txscript.StakeGenTy:
+		case stdscript.STStakeGenPubKeyHash, stdscript.STStakeGenScriptHash:
 			if !coinbaseMatured(w.chainParams, output.Height, currentHeight) {
 				continue
 			}
-		case txscript.StakeRevocationTy:
+		case stdscript.STStakeRevocationPubKeyHash, stdscript.STStakeRevocationScriptHash:
 			if !coinbaseMatured(w.chainParams, output.Height, currentHeight) {
 				continue
 			}
-		case txscript.TreasuryAddTy, txscript.TreasuryGenTy:
+		case stdscript.STTreasuryAdd, stdscript.STTreasuryGenPubKeyHash, stdscript.STTreasuryGenScriptHash:
 			if !coinbaseMatured(w.chainParams, output.Height, currentHeight) {
 				continue
 			}
-		case txscript.StakeSubChangeTy:
+		case stdscript.STStakeChangePubKeyHash, stdscript.STStakeChangeScriptHash:
 			if !ticketChangeMatured(w.chainParams, output.Height, currentHeight) {
 				continue
 			}
-		case txscript.PubKeyHashTy:
+		case stdscript.STPubKeyHashEcdsaSecp256k1:
 			if output.FromCoinBase {
 				if !coinbaseMatured(w.chainParams, output.Height, currentHeight) {
 					continue
@@ -2042,12 +2039,9 @@ func (w *Wallet) signP2PKHMsgTx(msgtx *wire.MsgTx, prevOutputs []Input, addrmgrN
 			len(prevOutputs), len(msgtx.TxIn))
 	}
 	for i, output := range prevOutputs {
-		// Errors don't matter here, as we only consider the
-		// case where len(addrs) == 1.
-		_, addrs, _, _ := txscript.ExtractPkScriptAddrs(
-			0, output.PrevOut.PkScript, w.chainParams, true) // Yes treasury
+		_, addrs := stdscript.ExtractAddrs(output.PrevOut.Version, output.PrevOut.PkScript, w.chainParams)
 		if len(addrs) != 1 {
-			continue
+			continue // not error? errors.E(errors.Bug, "previous output address is not P2PKH")
 		}
 		apkh, ok := addrs[0].(*stdaddr.AddressPubKeyHashEcdsaSecp256k1V0)
 		if !ok {
@@ -2138,7 +2132,7 @@ func newVoteScript(voteBits stake.VoteBits) ([]byte, error) {
 	b := make([]byte, 2+len(voteBits.ExtendedBits))
 	binary.LittleEndian.PutUint16(b[0:2], voteBits.Bits)
 	copy(b[2:], voteBits.ExtendedBits)
-	return txscript.GenerateProvablyPruneableOut(b)
+	return stdscript.ProvablyPruneableScriptV0(b)
 }
 
 // createUnsignedVote creates an unsigned vote transaction that votes using the
@@ -2147,7 +2141,8 @@ func newVoteScript(voteBits stake.VoteBits) ([]byte, error) {
 // is voting on.
 func createUnsignedVote(ticketHash *chainhash.Hash, ticketPurchase *wire.MsgTx,
 	blockHeight int32, blockHash *chainhash.Hash, voteBits stake.VoteBits,
-	subsidyCache *blockchain.SubsidyCache, params *chaincfg.Params) (*wire.MsgTx, error) {
+	subsidyCache *blockchain.SubsidyCache, params *chaincfg.Params,
+	dcp0010Active bool) (*wire.MsgTx, error) {
 
 	// Parse the ticket purchase transaction to determine the required output
 	// destinations for vote rewards or revocations.
@@ -2155,7 +2150,8 @@ func createUnsignedVote(ticketHash *chainhash.Hash, ticketPurchase *wire.MsgTx,
 		stake.TxSStxStakeOutputInfo(ticketPurchase)
 
 	// Calculate the subsidy for votes at this height.
-	subsidy := subsidyCache.CalcStakeVoteSubsidy(int64(blockHeight))
+	subsidy := subsidyCache.CalcStakeVoteSubsidyV2(int64(blockHeight),
+		dcp0010Active)
 
 	// Calculate the output values from this vote using the subsidy.
 	voteRewardValues := stake.CalculateRewards(ticketValues,

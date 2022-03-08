@@ -3,7 +3,8 @@
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
-//+build !generate
+//go:build !generate
+// +build !generate
 
 package rpchelp
 
@@ -52,8 +53,10 @@ var Methods = []struct {
 	{"getbestblockhash", returnsString},
 	{"getblockcount", returnsNumber},
 	{"getblockhash", returnsString},
+	{"getblockheader", []interface{}{(*dcrdtypes.GetBlockHeaderVerboseResult)(nil)}},
 	{"getblock", []interface{}{(*dcrdtypes.GetBlockVerboseResult)(nil)}},
 	{"getcoinjoinsbyacct", []interface{}{(*map[string]uint32)(nil)}},
+	{"getcurrentnet", []interface{}{(*uint32)(nil)}},
 	{"getinfo", []interface{}{(*types.InfoWalletResult)(nil)}},
 	{"getmasterpubkey", []interface{}{(*string)(nil)}},
 	{"getmultisigoutinfo", []interface{}{(*types.GetMultisigOutInfoResult)(nil)}},
@@ -90,6 +93,7 @@ var Methods = []struct {
 	{"mixaccount", nil},
 	{"mixoutput", nil},
 	{"purchaseticket", returnsString},
+	{"processunmanagedticket", nil},
 	{"redeemmultisigout", []interface{}{(*types.RedeemMultiSigOutResult)(nil)}},
 	{"redeemmultisigouts", []interface{}{(*types.RedeemMultiSigOutResult)(nil)}},
 	{"renameaccount", nil},

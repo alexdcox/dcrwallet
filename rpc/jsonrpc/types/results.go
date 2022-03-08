@@ -372,18 +372,21 @@ type TicketInfoResult struct {
 	Vote          string       `json:"vote,omitempty"`
 	Revocation    string       `json:"revocation,omitempty"`
 	Choices       []VoteChoice `json:"choices,omitempty"`
+	VSPHost       string       `json:"vsphost,omitempty"`
 }
 
 // TreasuryPolicyResult models objects returned by the treasurypolicy command.
 type TreasuryPolicyResult struct {
 	Key    string `json:"key"`
 	Policy string `json:"policy"`
+	Ticket string `json:"ticket,omitempty"`
 }
 
 // TSpendPolicyResult models objects returned by the tspendpolicy command.
 type TSpendPolicyResult struct {
 	Hash   string `json:"hash"`
 	Policy string `json:"policy"`
+	Ticket string `json:"ticket,omitempty"`
 }
 
 // ValidateAddressResult models the data returned by the wallet server
@@ -402,6 +405,9 @@ type ValidateAddressResult struct {
 	Hex          string   `json:"hex,omitempty"`
 	Script       string   `json:"script,omitempty"`
 	SigsRequired int32    `json:"sigsrequired,omitempty"`
+	AccountN     *uint32  `json:"accountn,omitempty"`
+	Branch       *uint32  `json:"branch,omitempty"`
+	Index        *uint32  `json:"index,omitempty"`
 }
 
 // ValidateAddressWalletResult aliases ValidateAddressResult.
@@ -410,6 +416,7 @@ type ValidateAddressWalletResult = ValidateAddressResult
 // WalletInfoResult models the data returned from the walletinfo command.
 type WalletInfoResult struct {
 	DaemonConnected  bool    `json:"daemonconnected"`
+	SPV              bool    `json:"spv"`
 	Unlocked         bool    `json:"unlocked"`
 	CoinType         uint32  `json:"cointype,omitempty"`
 	TxFee            float64 `json:"txfee"`

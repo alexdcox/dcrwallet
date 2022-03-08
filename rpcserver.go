@@ -14,7 +14,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"math/big"
 	"net"
 	"os"
@@ -30,8 +29,10 @@ import (
 	"decred.org/dcrwallet/v2/internal/rpc/rpcserver"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/peer"
+	"google.golang.org/grpc/status"
 )
 
 // openRPCKeyPair creates or loads the RPC TLS keypair specified by the
@@ -92,12 +93,12 @@ func generateRPCKeyPair(writeKey bool) (tls.Certificate, error) {
 	}
 
 	// Write cert and (potentially) the key files.
-	err = ioutil.WriteFile(cfg.RPCCert.Value, cert, 0600)
+	err = os.WriteFile(cfg.RPCCert.Value, cert, 0600)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
 	if writeKey {
-		err = ioutil.WriteFile(cfg.RPCKey.Value, key, 0600)
+		err = os.WriteFile(cfg.RPCKey.Value, key, 0600)
 		if err != nil {
 			rmErr := os.Remove(cfg.RPCCert.Value)
 			if rmErr != nil {
@@ -267,7 +268,7 @@ func startRPCServers(walletLoader *loader.Loader) (*grpc.Server, *jsonrpc.Server
 		}
 		clientCAsExist, _ = cfgutil.FileExists(cfg.ClientCAFile.Value)
 		if clientCAsExist {
-			cafile, err := ioutil.ReadFile(cfg.ClientCAFile.Value)
+			cafile, err := os.ReadFile(cfg.ClientCAFile.Value)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -370,6 +371,9 @@ func startRPCServers(walletLoader *loader.Loader) (*grpc.Server, *jsonrpc.Server
 			MixBranch:           cfg.mixedBranch,
 			MixChangeAccount:    cfg.ChangeAccount,
 			VSPHost:             cfg.VSPOpts.URL,
+			VSPPubKey:           cfg.VSPOpts.PubKey,
+			TicketSplitAccount:  cfg.TicketSplitAccount,
+			Dial:                cfg.dial,
 		}
 		jsonrpcServer = jsonrpc.NewServer(&opts, activeNet.Params, walletLoader, listeners)
 		for _, lis := range listeners {
@@ -406,7 +410,15 @@ func interceptStreaming(srv interface{}, ss grpc.ServerStream, info *grpc.Stream
 	}
 	err = handler(srv, ss)
 	if err != nil && ok {
-		grpcLog.Errorf("Streaming method %s invoked by %s errored: %v",
+		logf := grpcLog.Errorf
+		if status.Code(err) == codes.Canceled && done(ss.Context()) {
+			// Canceled contexts in streaming calls are expected
+			// when client-initiated, so only log them with debug
+			// level to reduce clutter.
+			logf = grpcLog.Debugf
+		}
+
+		logf("Streaming method %s invoked by %s errored: %v",
 			info.FullMethod, p.Addr.String(), err)
 	}
 	return err

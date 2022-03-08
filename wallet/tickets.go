@@ -23,11 +23,15 @@ import (
 // GenerateVoteTx creates a vote transaction for a chosen ticket purchase hash
 // using the provided votebits.  The ticket purchase transaction must be stored
 // by the wallet.
+//
+// Deprecated: This method will not produce the proper vote subsidy after
+// DCP0010 activation.
 func (w *Wallet) GenerateVoteTx(ctx context.Context, blockHash *chainhash.Hash, height int32,
 	ticketHash *chainhash.Hash, voteBits stake.VoteBits) (*wire.MsgTx, error) {
 	const op errors.Op = "wallet.GenerateVoteTx"
 
 	var vote *wire.MsgTx
+	const dcp0010Active = false
 	err := walletdb.View(ctx, w.db, func(dbtx walletdb.ReadTx) error {
 		addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
 		txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
@@ -36,7 +40,8 @@ func (w *Wallet) GenerateVoteTx(ctx context.Context, blockHash *chainhash.Hash, 
 			return err
 		}
 		vote, err = createUnsignedVote(ticketHash, ticketPurchase,
-			height, blockHash, voteBits, w.subsidyCache, w.chainParams)
+			height, blockHash, voteBits, w.subsidyCache, w.chainParams,
+			dcp0010Active)
 		if err != nil {
 			return errors.E(op, err)
 		}
@@ -430,6 +435,87 @@ func (w *Wallet) RevokeExpiredTickets(ctx context.Context, p Peer) (err error) {
 		return err
 	}
 
+	if n, err := w.NetworkBackend(); err == nil && len(watchOutPoints) > 0 {
+		err := n.LoadTxFilter(ctx, false, nil, watchOutPoints)
+		if err != nil {
+			log.Errorf("Failed to watch outpoints: %v", err)
+		}
+	}
+
+	return nil
+}
+
+// RevokeTicket creates and sends revocation transaction for the provided ticket
+// hash.  The wallet/account must be unlocked to generate any
+// revocations.
+func (w *Wallet) RevokeTicket(ctx context.Context, ticketHash *chainhash.Hash, p Peer) error {
+	const op errors.Op = "wallet.RevokeTicket"
+
+	feePerKb := w.RelayFee()
+	var revocation *wire.MsgTx
+	err := walletdb.View(ctx, w.db, func(dbtx walletdb.ReadTx) error {
+		addrmgrNs := dbtx.ReadBucket(waddrmgrNamespaceKey)
+		txmgrNs := dbtx.ReadBucket(wtxmgrNamespaceKey)
+		ticketPurchase, err := w.txStore.Tx(txmgrNs, ticketHash)
+		if err != nil {
+			return err
+		}
+		// Don't create revocations when this wallet doesn't have voting
+		// authority.
+		owned, havePrivKey, err := w.hasVotingAuthority(addrmgrNs, ticketPurchase)
+		if err != nil {
+			return err
+		}
+		if !owned {
+			return errors.Errorf("%v is not owned", ticketHash)
+		}
+		if !havePrivKey {
+			return errors.Errorf("wallet does not have privkey for %v",
+				ticketHash)
+		}
+
+		revocation, err = createUnsignedRevocation(ticketHash,
+			ticketPurchase, feePerKb, w.chainParams)
+		if err != nil {
+			return err
+		}
+		err = w.signRevocation(addrmgrNs, ticketPurchase, revocation)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return errors.E(op, err)
+	}
+
+	rec, err := udb.NewTxRecordFromMsgTx(revocation, time.Now())
+	if err != nil {
+		return errors.E(op, err)
+	}
+	var watchOutPoints []wire.OutPoint
+	//w.lockedOutpointMu intentionally not locked.
+	err = walletdb.Update(ctx, w.db, func(dbtx walletdb.ReadWriteTx) error {
+		// Could be more efficient by avoiding processTransaction, as we
+		// know it is a revocation.
+		watchOutPoints, err = w.processTransactionRecord(ctx, dbtx, rec, nil,
+			nil)
+		if err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return errors.E(op, err)
+	}
+
+	err = p.PublishTransactions(ctx, revocation)
+	if err != nil {
+		return errors.E(op, err)
+	}
+
+	log.Infof("Revoked ticket %v with revocation %v", ticketHash,
+		&rec.Hash)
 	if n, err := w.NetworkBackend(); err == nil && len(watchOutPoints) > 0 {
 		err := n.LoadTxFilter(ctx, false, nil, watchOutPoints)
 		if err != nil {
